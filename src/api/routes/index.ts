@@ -1206,7 +1206,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   //
   // Issue #291: requires authentication to write to admin_audit_log.
   app.post<{ Params: { id: string } }>('/admin/failed-events/:id/re-evaluate', async (req, reply) => {
-    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log)
+    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log, authFailureTracker)
     if (!auth.authenticated) {
       return reply.code(auth.status).send({ error: auth.error || 'Authentication required' })
     }
@@ -1238,7 +1238,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   // Issue #291: requires authentication to write to admin_audit_log.
   const MAX_BATCH_RESOLVE_IDS = 500
   app.post('/admin/failed-events/batch-resolve', async (req, reply) => {
-    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log)
+    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log, authFailureTracker)
     if (!auth.authenticated) {
       return reply.code(auth.status).send({ error: auth.error || 'Authentication required' })
     }
@@ -1291,7 +1291,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     let adminAddress = 'operator'
     const authHeader = req.headers.authorization
     if (authHeader) {
-      const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log)
+      const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log, authFailureTracker)
       if (!auth.authenticated) {
         return reply.code(auth.status).send({ error: auth.error || 'Authentication required' })
       }
@@ -1319,7 +1319,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   app.get('/admin/audit-log', async (req, reply) => {
     // Require authentication — this endpoint surfaces IP addresses and admin
     // identities that are not appropriate for unauthenticated callers.
-    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log)
+    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log, authFailureTracker)
     if (!auth.authenticated) {
       return reply.code(auth.status).send({ error: auth.error || 'Authentication required' })
     }

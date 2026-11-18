@@ -82,6 +82,13 @@ export interface BuildServerOptions {
    * timeouts (issue #187) to something a test can wait out.
    */
   serverOptions?: Partial<FastifyServerOptions> & { http?: ServerOptions }
+  /**
+   * Override the AuthFailureTracker instance. Production passes nothing and
+   * gets a fresh one; tests pass their own so they can inspect/seed its state
+   * (e.g. to assert the same tracker instance observes auth attempts across
+   * every route that wires it in — issue #603).
+   */
+  authFailureTracker?: AuthFailureTracker
 }
 
 /**
@@ -179,7 +186,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   // Issue #207: store the nonce store for shutdown access
   activeNonceStore = nonceStore
 
-  const authFailureTracker = new AuthFailureTracker()
+  const authFailureTracker = opts.authFailureTracker ?? new AuthFailureTracker()
 
   // Issue #182: register shutdown hook to clean up nonce store timers on close
   app.addHook('onClose', async () => {
