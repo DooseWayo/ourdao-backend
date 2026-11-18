@@ -375,8 +375,11 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS admin_audit_log_admin_address_idx ON admin_audit_log (admin_address, created_at DESC);
-CREATE INDEX IF NOT EXISTS admin_audit_log_action_idx ON admin_audit_log (action, created_at DESC);
+-- Issue #608: GET /admin/audit-log pages and sorts by `id`, never
+-- `created_at` -- these are keyed to match that (see migrations/0036 for the
+-- measurement). Superseded the original created_at-keyed composites.
+CREATE INDEX IF NOT EXISTS admin_audit_log_admin_address_id_idx ON admin_audit_log (admin_address, id DESC);
+CREATE INDEX IF NOT EXISTS admin_audit_log_action_id_idx ON admin_audit_log (action, id DESC);
 CREATE INDEX IF NOT EXISTS admin_audit_log_created_at_idx ON admin_audit_log (created_at DESC);
 
 -- Append-only enforcement (migration 0032).
