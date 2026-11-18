@@ -41,10 +41,6 @@ interface PackageJson {
   version: string
 }
 
-// Stellar's nominal ledger close interval in seconds.
-// Used by the /ready endpoint to convert ledgers-behind into estimated lag time.
-const STELLAR_LEDGER_CLOSE_TIME_SECONDS = 5
-
 // Helper to read package.json version
 function readPackageVersion(): string {
   try {

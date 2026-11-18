@@ -289,7 +289,7 @@ async function writeAuditLog(
 }
 
 export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: NonceStore; authFailureTracker?: AuthFailureTracker }): Promise<void> {
-  const { nonceStore, authFailureTracker }
+  const { nonceStore, authFailureTracker } = opts
   const historyCache = createHistoryCache()
   app.addHook('onClose', async () => historyCache.close())
 
