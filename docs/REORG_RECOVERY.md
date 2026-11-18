@@ -27,21 +27,21 @@ Operational guide for diagnosing and resolving an indexer reorg alarm. Written f
 
 ## 1. Background: how the indexer tracks its position
 
-The indexer polls the Soroban RPC's `getEvents` for the configured contract and folds each event into Postgres: the raw event first into the append-only `events` log, then its derived side effects into `members`, `loan_proposals`, `loans`, `treasury_proposals`, `notifications`, `interest_distributions`, and `documents` — raw row and fold always in one transaction (`src/indexer/poller.ts`). Resume position lives in a single row in `indexer_cursor`.
+The indexer polls the Soroban RPC's `getEvents` for the configured contract(s) and folds each event into Postgres: the raw event first into the append-only `events` log, then its derived side effects into `members`, `loan_proposals`, `loans`, `treasury_proposals`, `notifications`, `interest_distributions`, and `documents` — raw row and fold always in one transaction (`src/indexer/poller.ts`). Resume position lives in `indexer_cursor`, one row per tailed contract.
 
 ### The `indexer_cursor` row
 
-One row, `id = 1` (enforced by a CHECK constraint). Created by `src/db/schema.sql`, altered by `src/db/migrations/0009_indexer_cursor_observed_tip.sql`.
+**One row per tailed contract**, primary-keyed on `contract_id` — not a single singleton row. Created by `src/db/schema.sql`, altered by `src/db/migrations/0009_indexer_cursor_observed_tip.sql`, then by `src/db/migrations/0027_multi_contract_cursor.sql` (issue #289) when multi-contract tailing (`CONTRACT_IDS`) landed: the old `id = 1` singleton `CHECK` constraint was dropped, `contract_id` became `NOT NULL` and the primary key, and `id` became nullable with no default. A single-`CONTRACT_ID` deployment still sees exactly one row — it's just keyed by that contract's id now, not by `id = 1` — but a deployment tailing several contracts holds one independent row per contract, each with its own `paging_token`/`last_ledger`/`last_ledger_hash`.
 
 | Column | Type | Written by `saveCursor` as | Meaning |
 |---|---|---|---|
-| `id` | `SMALLINT` | always `1` | Singleton marker |
-| `paging_token` | `TEXT` | the last page's final event `id` (falls back to the RPC's `cursor`) | `getEvents` resume token — where the next poll resumes |
-| `last_ledger` | `BIGINT` | the highest ledger whose events were **actually folded** | The fold point. Drives the reorg continuity checks. Never advances past un-folded history (issue #45) |
+| `id` | `SMALLINT`, nullable, no default | not written by current code | Vestigial — the pre-#289 singleton marker, kept only so a database that predates #289 doesn't need a manual column drop. Carries no meaning; ignore it. |
+| `paging_token` | `TEXT` | the last page's final event `id` (falls back to the RPC's `cursor`) | `getEvents` resume token — where the next poll resumes, for this row's `contract_id` |
+| `last_ledger` | `BIGINT` | the highest ledger whose events were **actually folded** | The fold point for this contract. Drives the reorg continuity checks. Never advances past un-folded history (issue #45) |
 | `last_ledger_hash` | `TEXT` | the hash of `last_ledger` **itself**, fetched by sequence from the RPC | Pins *which* history was folded to at that height. Drives the same-height fork check (issues #127, #128) |
 | `observed_tip_ledger` | `BIGINT` | the RPC's `latestLedger` as of the last page | Freshness signal only (`/ready`, `/api/stats`). **Never** used in the reorg checks |
-| `contract_id` | `TEXT` | the `CONTRACT_ID` the cursor was advanced for | A cursor belonging to a different contract is discarded (cold start) rather than resumed |
-| `updated_at` | `TIMESTAMPTZ` | `now()` on every save, and touched on idle polls | Freshness signal for `/ready` (`INDEXER_STALE_AFTER_MS`, default 2 min) |
+| `contract_id` | `TEXT PRIMARY KEY` | the `CONTRACT_ID`/`CONTRACT_IDS` entry this row's cursor was advanced for | The real primary key since issue #289. Each tailed contract gets its own row; a row belonging to a contract this deployment no longer tails is simply not read |
+| `updated_at` | `TIMESTAMPTZ` | `now()` on every save, and touched on idle polls | Freshness signal for `/ready` (`INDEXER_STALE_AFTER_MS`, default 2 min); `/ready` reflects the **worst** (least recently updated) row across all tailed contracts (`src/api/server.ts`) |
 
 ### `last_ledger` vs `observed_tip_ledger` — why two numbers
 
@@ -129,11 +129,13 @@ COMMIT;
 per event (batched per page in one transaction on the fast path), plus the cursor advance:
 
 ```sql
-INSERT INTO indexer_cursor (id, paging_token, last_ledger, last_ledger_hash, observed_tip_ledger, contract_id, updated_at)
-VALUES (1, $1, $2, $3, $4, $5, now())
-ON CONFLICT (id) DO UPDATE SET paging_token = $1, last_ledger = $2, last_ledger_hash = $3,
-  observed_tip_ledger = $4, contract_id = $5, updated_at = now();
+INSERT INTO indexer_cursor (paging_token, last_ledger, last_ledger_hash, observed_tip_ledger, contract_id, updated_at)
+VALUES ($1, $2, $3, $4, $5, now())
+ON CONFLICT (contract_id) DO UPDATE SET paging_token = $1, last_ledger = $2, last_ledger_hash = $3,
+  observed_tip_ledger = $4, updated_at = now();
 ```
+
+One row per tailed `contract_id` (issue #289) — `ON CONFLICT (contract_id)`, not `id`.
 
 The halt itself is a thrown exception. The point of "detection only": history the indexer folded is presumed good until proven otherwise, and proving otherwise is exactly what section 6 does.
 
@@ -176,11 +178,14 @@ Run these against the production database read-only while triaging. `psql "$DATA
 **The cursor row — always start here:**
 
 ```sql
-SELECT id, paging_token, last_ledger, last_ledger_hash,
-       observed_tip_ledger, contract_id, updated_at,
+SELECT contract_id, paging_token, last_ledger, last_ledger_hash,
+       observed_tip_ledger, updated_at,
        round(extract(epoch FROM (now() - updated_at))) AS seconds_stale
-  FROM indexer_cursor;
+  FROM indexer_cursor
+ ORDER BY updated_at ASC NULLS FIRST;
 ```
+
+One row per tailed contract (issue #289) — a single-`CONTRACT_ID` deployment gets exactly one row back; a multi-contract deployment gets one per `CONTRACT_IDS` entry. `/ready` and `/api/stats` report against the single *worst* (least recently updated) row, which is why this query is ordered the same way — if you're triaging a specific contract, add `WHERE contract_id = '<C...>'` instead. Ignore the `id` column if your psql client shows it; it's a vestigial pre-#289 artifact with no meaning.
 
 Reading it:
 
@@ -212,10 +217,13 @@ Compare `result.ledgers[0].hash` with the `last_ledger_hash` from the cursor que
 ```sql
 SELECT id, ledger, closed_at, symbol, tx_hash, folded_at, created_at
   FROM events
- WHERE ledger <= (SELECT last_ledger FROM indexer_cursor WHERE id = 1)
+ WHERE contract_id = '<C...>'
+   AND ledger <= (SELECT last_ledger FROM indexer_cursor WHERE contract_id = '<C...>')
  ORDER BY ledger DESC, id DESC
  LIMIT 20;
 ```
+
+Substitute the contract you're triaging for `<C...>` on both lines — `indexer_cursor` holds one `last_ledger` per contract (issue #289), so this must be scoped to the same contract on both sides or it compares `events` against the wrong cursor on a multi-contract deployment. (A single-`CONTRACT_ID` deployment only has one, but the `WHERE` still needs it — `indexer_cursor` has no row to fall back to without a key.)
 
 `created_at` (insert time) vs `closed_at` (chain time) tells you whether a suspicious row is freshly fetched re-delivery or long-standing history.
 
@@ -224,10 +232,11 @@ SELECT id, ledger, closed_at, symbol, tx_hash, folded_at, created_at
 ```sql
 SELECT max(ledger) AS folded_through
   FROM events
- WHERE folded_at IS NOT NULL;
+ WHERE folded_at IS NOT NULL
+   AND contract_id = '<C...>';  -- omit on a single-contract deployment
 ```
 
-`folded_through` materially below `last_ledger` is normal after a quarantine (some events intentionally unfolded); it matters for judging what a rebuild will replay.
+`folded_through` materially below that contract's `last_ledger` is normal after a quarantine (some events intentionally unfolded); it matters for judging what a rebuild will replay. On a multi-contract deployment, compare against the same contract's cursor row — ledger numbers are chain-wide, but each contract's fold progress (and quarantine state) is independent.
 
 **Live health view (no psql required):** `GET /ready` and `GET /api/stats` expose the same numbers — `lastIndexedLedger` (= `last_ledger`), `observedTipLedger`, `ledgersBehind`, `estimatedLagSeconds`, `quarantinedEvents`. Handy for the incident channel; the SQL above is the ground truth.
 
@@ -394,4 +403,4 @@ Everything above is exercised by the suite: continuity and hash-change detection
 - **`src/indexer/poller.ts`** — the checks themselves (`ReorgDetectedError`, `fetchOnce`, `runIndexer`); every behavior in this document traces to a comment there.
 - **`src/indexer/reindex.ts`** — the rebuild; `npm run reindex`.
 - **`src/indexer/replay.ts`** — targeted re-fold of quarantined events (`npm run replay-failed`) — for handler bugs, not reorgs.
-- **`src/db/schema.sql` / `src/db/migrations/0009_indexer_cursor_observed_tip.sql`** — cursor shape and the observed-tip column's history.
+- **`src/db/schema.sql` / `src/db/migrations/0009_indexer_cursor_observed_tip.sql` / `src/db/migrations/0027_multi_contract_cursor.sql`** — cursor shape, the observed-tip column's history, and the move from a single `id = 1` row to one row per tailed contract (issue #289).

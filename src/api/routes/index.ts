@@ -289,7 +289,7 @@ async function writeAuditLog(
 }
 
 export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: NonceStore; authFailureTracker?: AuthFailureTracker }): Promise<void> {
-  const { nonceStore, authFailureTracker }
+  const { nonceStore, authFailureTracker } = opts
   const historyCache = createHistoryCache()
   app.addHook('onClose', async () => historyCache.close())
 
@@ -515,11 +515,11 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   // --- Single loan proposal lookup (issue #398) ---
   app.get<{ Params: { id: string } }>('/proposals/loan/:id', async (req, reply) => {
     setCachePolicy(reply, 'public-live')
-    const rawId = req.params.id.trim()
-    if (!/^[0-9]+$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) <= 0) {
+    const id = entityIdParam(req.params.id)
+    if (id === null) {
       return reply.code(400).send({ error: 'invalid proposal id' })
     }
-    const proposal = await queryOne<LoanProposalRow>('SELECT * FROM loan_proposals WHERE id = $1', [Number(rawId)])
+    const proposal = await queryOne<LoanProposalRow>('SELECT * FROM loan_proposals WHERE id = $1', [Number(id)])
     if (!proposal) return reply.code(404).send({ error: 'loan proposal not found' })
     return { ...proposal, tallies_weighted: false }
   })
@@ -569,11 +569,11 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
 
   app.get<{ Params: { id: string } }>('/loans/:id', async (req, reply) => {
     setCachePolicy(reply, 'public-live')
-    const rawId = req.params.id.trim()
-    if (!/^[0-9]+$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) <= 0) {
+    const id = entityIdParam(req.params.id)
+    if (id === null) {
       return reply.code(400).send({ error: 'invalid loan id' })
     }
-    const loan = await queryOne<LoanRow>('SELECT * FROM loans WHERE id = $1', [Number(rawId)])
+    const loan = await queryOne<LoanRow>('SELECT * FROM loans WHERE id = $1', [Number(id)])
     if (!loan) return reply.code(404).send({ error: 'loan not found' })
     return withLoanDerived(loan, req.log)
   })
@@ -623,11 +623,11 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   // --- Single treasury proposal lookup (issue #398) ---
   app.get<{ Params: { id: string } }>('/proposals/treasury/:id', async (req, reply) => {
     setCachePolicy(reply, 'public-live')
-    const rawId = req.params.id.trim()
-    if (!/^[0-9]+$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) <= 0) {
+    const id = entityIdParam(req.params.id)
+    if (id === null) {
       return reply.code(400).send({ error: 'invalid proposal id' })
     }
-    const proposal = await queryOne<TreasuryProposalRow>('SELECT * FROM treasury_proposals WHERE id = $1', [Number(rawId)])
+    const proposal = await queryOne<TreasuryProposalRow>('SELECT * FROM treasury_proposals WHERE id = $1', [Number(id)])
     if (!proposal) return reply.code(404).send({ error: 'treasury proposal not found' })
     return { ...proposal, tallies_weighted: false }
   })
@@ -845,8 +845,8 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
       return reply.code(auth.status).send({ error: auth.error || 'Authentication required' })
     }
 
-    const rawId = req.params.id.trim()
-    if (!/^[0-9]+$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) <= 0) {
+    const rawId = entityIdParam(req.params.id)
+    if (rawId === null) {
       return reply.code(400).send({ error: 'invalid notification id' })
     }
     const id = Number(rawId)
@@ -1206,7 +1206,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   //
   // Issue #291: requires authentication to write to admin_audit_log.
   app.post<{ Params: { id: string } }>('/admin/failed-events/:id/re-evaluate', async (req, reply) => {
-    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log)
+    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log, authFailureTracker)
     if (!auth.authenticated) {
       return reply.code(auth.status).send({ error: auth.error || 'Authentication required' })
     }
@@ -1238,7 +1238,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   // Issue #291: requires authentication to write to admin_audit_log.
   const MAX_BATCH_RESOLVE_IDS = 500
   app.post('/admin/failed-events/batch-resolve', async (req, reply) => {
-    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log)
+    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log, authFailureTracker)
     if (!auth.authenticated) {
       return reply.code(auth.status).send({ error: auth.error || 'Authentication required' })
     }
@@ -1291,7 +1291,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     let adminAddress = 'operator'
     const authHeader = req.headers.authorization
     if (authHeader) {
-      const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log)
+      const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log, authFailureTracker)
       if (!auth.authenticated) {
         return reply.code(auth.status).send({ error: auth.error || 'Authentication required' })
       }
@@ -1319,7 +1319,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   app.get('/admin/audit-log', async (req, reply) => {
     // Require authentication — this endpoint surfaces IP addresses and admin
     // identities that are not appropriate for unauthenticated callers.
-    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log)
+    const auth = await authenticateRequest(req.headers, nonceStore, undefined, req.log, authFailureTracker)
     if (!auth.authenticated) {
       return reply.code(auth.status).send({ error: auth.error || 'Authentication required' })
     }
