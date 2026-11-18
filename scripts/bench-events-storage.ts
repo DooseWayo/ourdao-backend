@@ -61,6 +61,10 @@ function fakeAddress(n: number): string {
   return 'G' + String(n).padStart(55, 'A').slice(0, 55)
 }
 
+function fakeTxHash(seq: number): string {
+  return seq.toString(16).padStart(64, '0')
+}
+
 function sampleEvent(seq: number): {
   id: string
   ledger: number
@@ -69,6 +73,8 @@ function sampleEvent(seq: number): {
   symbol: string
   topics: unknown[]
   data: unknown[]
+  txHash: string
+  decodeError: string | null
 } {
   const symbol = WEIGHTED[seq % WEIGHTED.length]!
   const fieldNames = EVENT_FIELDS[symbol] as readonly string[]
@@ -89,6 +95,12 @@ function sampleEvent(seq: number): {
     symbol,
     topics: [symbol, fakeAddress(seq % 2000)],
     data,
+    // Every real event carries a tx_hash (docs/events-storage.md's ~66-byte
+    // estimate for this column assumes it); decode_error stays null here --
+    // it's only set when decoding fails, which this synthetic data never
+    // does, and isn't part of that byte-size model.
+    txHash: fakeTxHash(seq),
+    decodeError: null,
   }
 }
 
@@ -139,6 +151,7 @@ interface SizeReport {
 }
 
 async function reportSizes(): Promise<SizeReport> {
+  // pg_class always has exactly one row for an existing relation.
   const { rows: [heap] } = await pool.query<{ total_bytes: number; heap_bytes: number; toast_bytes: number; rows: number }>(
     `SELECT pg_total_relation_size('events') AS total_bytes,
             pg_relation_size('events') AS heap_bytes,
@@ -146,6 +159,7 @@ async function reportSizes(): Promise<SizeReport> {
             (SELECT count(*) FROM events) AS rows
        FROM pg_class WHERE relname = 'events'`
   )
+  if (!heap) throw new Error("pg_class has no row for 'events' -- has schema.sql been applied?")
   const bytesPerRow = heap.rows > 0 ? Math.round(heap.total_bytes / heap.rows) : 0
   console.log(
     `  events: total=${formatBytes(heap.total_bytes)} heap=${formatBytes(heap.heap_bytes)} ` +
