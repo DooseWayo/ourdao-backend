@@ -124,6 +124,9 @@ CREATE TABLE IF NOT EXISTS loan_proposals (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS loan_proposals_borrower_idx ON loan_proposals (borrower);
+-- Supports the ?status= filter on GET /api/proposals/loan (issue #605),
+-- matching loans_status_idx below. See docs/proposal-status-query-plan.md.
+CREATE INDEX IF NOT EXISTS loan_proposals_status_idx ON loan_proposals (status);
 
 -- `id` doubles as the originating loan_proposals.id: the contract reuses the
 -- proposal's own id for the disbursed loan (see ourdao-contracts'
@@ -162,6 +165,9 @@ CREATE TABLE IF NOT EXISTS treasury_proposals (
   executed_ledger BIGINT,
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Supports the ?status= filter on GET /api/proposals/treasury (issue #605).
+-- See docs/proposal-status-query-plan.md.
+CREATE INDEX IF NOT EXISTS treasury_proposals_status_idx ON treasury_proposals (status);
 
 CREATE TABLE IF NOT EXISTS notifications (
   id         BIGSERIAL PRIMARY KEY,
