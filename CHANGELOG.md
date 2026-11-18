@@ -37,6 +37,7 @@ Entries that affect deployment or runtime state are annotated:
 
 
 ### Fixed
+- **`npm ci` and `migrate()` work again**: `package-lock.json` had drifted from `package.json`'s `axios` override (`npm ci` failed on every push since 2026-10-25, before CI ever reached lint/typecheck/test), and two migrations both claimed version `0033` (merged together in #408), which made `migrate()` throw on every boot via `assertNoDuplicateVersions` — the API and worker couldn't start, and every test failed in `beforeEach`. Lockfile regenerated; the smaller of the two `0033` migrations renumbered to `0035`.
 - **Original error preserved when `ROLLBACK` fails in `withTransaction`**: `withTransaction` wraps rollback attempts in a try/catch, logging any secondary rollback failure and setting `err.cause = rollbackErr` without overwriting the original query or transaction error (#401).
 - **`failed_events.resolution` populated during reindex and replay**: `reindexFromEventLog` and `replayFailedEvent` now set `resolution = 'resolved'` alongside `resolved_at = now()`, preventing resolution from remaining `NULL` when an event is resolved or folded (#395).
 - **Audit logging for reorg clear**: `clearRecordedReorg` now records an immutable audit log entry in `admin_audit_log` detailing the administrator, IP address, and cleared halt metadata (#402).
