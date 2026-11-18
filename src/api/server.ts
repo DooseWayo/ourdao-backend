@@ -17,6 +17,10 @@ import { MemoryNonceStore, PostgresNonceStore, AuthFailureTracker, getAuthStats,
 import { readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
+import { closeRedis } from '../cache/redis.js'
+import { metricsRegistry } from './metrics.js'
+import { server as rpcServer } from '../stellar/rpc.js'
+import type { ReorgHalt } from '../indexer/poller.js'
 // Stellar's nominal ledger close time, used to convert a lag in ledgers into
 // an estimated lag in seconds for the /ready readiness probe.
 const STELLAR_LEDGER_CLOSE_TIME_SECONDS = 5
@@ -41,8 +45,13 @@ interface PackageJson {
   version: string
 }
 
+interface PackageVersionResult {
+  version: string
+  error?: unknown
+}
+
 // Helper to read package.json version
-function readPackageVersion(): string {
+function readPackageVersion(): PackageVersionResult {
   try {
     const __dirname = dirname(fileURLToPath(import.meta.url))
     const pkgPath = join(__dirname, '../../package.json')
@@ -52,6 +61,9 @@ function readPackageVersion(): string {
     return { version: 'unknown', error }
   }
 }
+
+/** The four columns server.ts reads off reorg_halts for /ready's uncleared-halt check. */
+type ReorgHaltRow = Pick<ReorgHalt, 'contract_id' | 'last_ledger' | 'detail' | 'detected_at'>
 
 const packageVersionResult = readPackageVersion()
 
@@ -181,7 +193,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   if (config.db.nonceStore === 'postgres') {
     nonceStore = new PostgresNonceStore(pool, app.log)
   } else {
-    nonceStore = new MemoryNonceStore(app.log)
+    nonceStore = new MemoryNonceStore()
   }
   // Issue #207: store the nonce store for shutdown access
   activeNonceStore = nonceStore
