@@ -515,11 +515,11 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   // --- Single loan proposal lookup (issue #398) ---
   app.get<{ Params: { id: string } }>('/proposals/loan/:id', async (req, reply) => {
     setCachePolicy(reply, 'public-live')
-    const rawId = req.params.id.trim()
-    if (!/^[0-9]+$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) <= 0) {
+    const id = entityIdParam(req.params.id)
+    if (id === null) {
       return reply.code(400).send({ error: 'invalid proposal id' })
     }
-    const proposal = await queryOne<LoanProposalRow>('SELECT * FROM loan_proposals WHERE id = $1', [Number(rawId)])
+    const proposal = await queryOne<LoanProposalRow>('SELECT * FROM loan_proposals WHERE id = $1', [Number(id)])
     if (!proposal) return reply.code(404).send({ error: 'loan proposal not found' })
     return { ...proposal, tallies_weighted: false }
   })
@@ -569,11 +569,11 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
 
   app.get<{ Params: { id: string } }>('/loans/:id', async (req, reply) => {
     setCachePolicy(reply, 'public-live')
-    const rawId = req.params.id.trim()
-    if (!/^[0-9]+$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) <= 0) {
+    const id = entityIdParam(req.params.id)
+    if (id === null) {
       return reply.code(400).send({ error: 'invalid loan id' })
     }
-    const loan = await queryOne<LoanRow>('SELECT * FROM loans WHERE id = $1', [Number(rawId)])
+    const loan = await queryOne<LoanRow>('SELECT * FROM loans WHERE id = $1', [Number(id)])
     if (!loan) return reply.code(404).send({ error: 'loan not found' })
     return withLoanDerived(loan, req.log)
   })
@@ -623,11 +623,11 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   // --- Single treasury proposal lookup (issue #398) ---
   app.get<{ Params: { id: string } }>('/proposals/treasury/:id', async (req, reply) => {
     setCachePolicy(reply, 'public-live')
-    const rawId = req.params.id.trim()
-    if (!/^[0-9]+$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) <= 0) {
+    const id = entityIdParam(req.params.id)
+    if (id === null) {
       return reply.code(400).send({ error: 'invalid proposal id' })
     }
-    const proposal = await queryOne<TreasuryProposalRow>('SELECT * FROM treasury_proposals WHERE id = $1', [Number(rawId)])
+    const proposal = await queryOne<TreasuryProposalRow>('SELECT * FROM treasury_proposals WHERE id = $1', [Number(id)])
     if (!proposal) return reply.code(404).send({ error: 'treasury proposal not found' })
     return { ...proposal, tallies_weighted: false }
   })
@@ -845,8 +845,8 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
       return reply.code(auth.status).send({ error: auth.error || 'Authentication required' })
     }
 
-    const rawId = req.params.id.trim()
-    if (!/^[0-9]+$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) <= 0) {
+    const rawId = entityIdParam(req.params.id)
+    if (rawId === null) {
       return reply.code(400).send({ error: 'invalid notification id' })
     }
     const id = Number(rawId)
