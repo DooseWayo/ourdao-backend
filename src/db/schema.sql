@@ -104,6 +104,17 @@ CREATE TABLE IF NOT EXISTS members (
 -- non-exited rows, so `count(*) ... WHERE exited = false` is an index-only
 -- scan over the small live set rather than a seq scan of every member ever.
 CREATE INDEX IF NOT EXISTS members_active_idx ON members (address) WHERE exited = false;
+-- Supports GET /api/members' `ORDER BY joined_ledger DESC NULLS LAST` over
+-- the same active-member filter (issue #607) -- members_active_idx above is
+-- keyed on `address`, not `joined_ledger`, so it can't serve this sort.
+-- NULLS LAST is explicit: see migrations/0034 for why a DESC index's default
+-- null-ordering would otherwise defeat the planner's pathkey match. Not a
+-- replacement for members_active_idx, which still serves the broader
+-- `WHERE exited = false` (no `joined_ledger` filter) aggregates in
+-- /api/stats that this narrower partial index can't satisfy.
+CREATE INDEX IF NOT EXISTS members_active_joined_ledger_idx
+  ON members (joined_ledger DESC NULLS LAST)
+  WHERE exited = false AND joined_ledger IS NOT NULL;
 
 -- `votes_for`/`votes_against` hold stake-weighted voting power (see the
 -- Event catalog section of the README), which can exceed what INTEGER was
