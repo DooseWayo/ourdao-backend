@@ -20,14 +20,18 @@ vi.mock('../src/stellar/events.js', async (importOriginal) => {
 
 const getEventsMock = vi.fn()
 const getLedgerHashMock = vi.fn()
-vi.mock('../src/stellar/rpc.js', () => ({
+vi.mock('../src/stellar/rpc.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stellar/rpc.js')>()
+  return {
+    ...actual,
   server: { getEvents: (...args: unknown[]) => getEventsMock(...(args as [unknown])) },
   getLatestLedger: vi.fn().mockResolvedValue(100_000),
   // Distinct from any per-ledger hash below, so a test that accidentally
   // stored the tip's hash instead of the folded ledger's is caught.
   getLatestLedgerInfo: vi.fn().mockResolvedValue({ sequence: 100_000, hash: 'HASH_TIP' }),
   getLedgerHash: (...args: unknown[]) => getLedgerHashMock(...(args as [number])),
-}))
+  }
+})
 
 async function cursorRow() {
   return queryOne<{ last_ledger: number | null; last_ledger_hash: string | null }>(

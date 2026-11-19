@@ -2,8 +2,8 @@ import type { rpc } from '@stellar/stellar-sdk'
 import type { PoolClient } from 'pg'
 import { SpanStatusCode } from '@opentelemetry/api'
 import { config, assertContractsConfigured } from '../config.js'
-import { pool, query, queryOne } from '../db/index.js'
-import { server, getLatestLedger, getLatestLedgerInfo, getLedgerHash, getLedgers } from '../stellar/rpc.js'
+import { pool, query, queryOne, acquireWorkerLeaderLock, type WorkerLeaderLock } from '../db/index.js'
+import { server, getLatestLedger, getLatestLedgerInfo, getLedgerHash, getLedgers, withRpcSpan } from '../stellar/rpc.js'
 import { decodeEvent, type DecodedEvent } from '../stellar/events.js'
 import { applyEvent } from './handlers.js'
 import { DERIVED_TABLES, resetDaoTotals } from './derived-tables.js'
@@ -27,6 +27,10 @@ interface CursorRow {
 // drain loop (issue #47) a way to check for shutdown between pages.
 let abortController: AbortController | null = null
 let running = false
+// Issue #584: held for the lifetime of the poll loop — see
+// acquireWorkerLeaderLock in src/db/index.ts for why this is a distinct lock
+// from REINDEX_LOCK_KEY. Null whenever `running` is false.
+let leaderLock: WorkerLeaderLock | null = null
 
 // Issue #173: saveCursor can fail after a page is folded, presenting as a
 // stalled indexer even though events are being ingested. Track cursor writes
@@ -816,21 +820,29 @@ export async function fetchOnce(contractId: string): Promise<void> {
       break
     }
 
-    const res = await server.getEvents(currentRequest)
-    const events = res.events ?? []
-    const pageCount = events.length
-
     // Issue #288: one span per drained page/event-batch, distinct from
     // applyEvent's per-event spans in handlers.ts — this is the unit
     // ingestPageWithQuarantine itself operates on (a whole-page transaction,
     // or one transaction per event once quarantining kicks in).
-    await getTracer().startActiveSpan('indexer.page', async (span) => {
+    // Issue #585: the page's `getEvents` RPC call is made inside this span
+    // (as its own `rpc.get_events` child, via withRpcSpan) rather than
+    // before it starts, so a trace can show RPC latency separately from
+    // ingestPageWithQuarantine's fold time instead of lumping both into the
+    // gap between indexer.page spans.
+    const { res, events, pageCount } = await getTracer().startActiveSpan('indexer.page', async (span) => {
       span.setAttribute('page.contract_id', contractId)
       span.setAttribute('page.number', totalPages + 1)
-      span.setAttribute('page.event_count', pageCount)
-      span.setAttribute('page.last_folded_ledger', lastLedger)
       try {
+        const res = await withRpcSpan('get_events', 'getEvents', async (rpcSpan) => {
+          rpcSpan.setAttribute('rpc.retry_count', 0)
+          return server.getEvents(currentRequest)
+        })
+        const events = res.events ?? []
+        const pageCount = events.length
+        span.setAttribute('page.event_count', pageCount)
+        span.setAttribute('page.last_folded_ledger', lastLedger)
         await ingestPageWithQuarantine(events, lastLedger, contractId)
+        return { res, events, pageCount }
       } catch (err) {
         span.recordException(err instanceof Error ? err : String(err))
         span.setStatus({ code: SpanStatusCode.ERROR })
@@ -962,6 +974,15 @@ export async function runIndexer(): Promise<void> {
   await ensureCursorContract(contractIds)
   console.log(`[indexer] watching ${contractIds.length} contract(s) on ${config.stellar.rpcUrl}: ${contractIds.join(', ')}`)
 
+  // Issue #584: refuse to start a second poll loop against the same
+  // database/schema while another worker already holds the lock — see
+  // acquireWorkerLeaderLock's doc comment (src/db/index.ts) for why this is
+  // a distinct, longer-held lock from REINDEX_LOCK_KEY. Acquired before the
+  // `running` latch below so a failed acquisition never leaves the process
+  // believing an indexer is running.
+  leaderLock = await acquireWorkerLeaderLock()
+  console.log('[indexer] acquired worker leader-election lock')
+
   // Latch only once every start-up check has passed, so a failed start
   // (no contract configured, cursor table unavailable) never leaves the
   // process believing an indexer is still running.
@@ -1038,6 +1059,12 @@ export async function runIndexer(): Promise<void> {
   } finally {
     running = false
     abortController = null
+    // Issue #584: release on every exit path (clean stop, or an uncaught
+    // error like ReorgHaltedError propagating out of the loop above) so a
+    // restart of this same process isn't locked out by its own prior run.
+    const lock = leaderLock
+    leaderLock = null
+    if (lock) await lock.release()
   }
 }
 

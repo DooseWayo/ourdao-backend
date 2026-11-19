@@ -15,12 +15,16 @@ vi.mock('../src/stellar/events.js', async (importOriginal) => {
 })
 
 const getEventsMock = vi.fn()
-vi.mock('../src/stellar/rpc.js', () => ({
+vi.mock('../src/stellar/rpc.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stellar/rpc.js')>()
+  return {
+    ...actual,
   server: { getEvents: (...args: unknown[]) => getEventsMock(...(args as [unknown])) },
   getLatestLedger: vi.fn().mockResolvedValue(100_000),
   getLatestLedgerInfo: vi.fn().mockResolvedValue({ sequence: 100_000, hash: 'HASH_TIP' }),
   getLedgerHash: vi.fn().mockResolvedValue('HASH_FOR_LEDGER'),
-}))
+  }
+})
 
 const exporter = new InMemorySpanExporter()
 let provider: NodeTracerProvider
@@ -113,6 +117,42 @@ describe('indexer.page span (issue #288)', () => {
     expect(span.attributes['page.number']).toBe(1)
     expect(span.attributes['page.event_count']).toBe(1)
     expect(span.status.code).not.toBe(2) // SpanStatusCode.ERROR
+  })
+})
+
+describe('rpc.get_events span (issue #585)', () => {
+  beforeEach(async () => {
+    await resetDb()
+    getEventsMock.mockReset()
+    exporter.reset()
+  })
+  afterAll(closeDb)
+
+  it('wraps the page RPC call as a child of indexer.page, recording the method and retry count', async () => {
+    const ev = decodedEvent('joined', { member: 'GA', fee: '10' })
+    getEventsMock.mockResolvedValueOnce({ events: [ev], cursor: 'tok', latestLedger: 100_000 })
+
+    await fetchOnce('CSPANTEST')
+
+    const pageSpan = exporter.getFinishedSpans().find((s) => s.name === 'indexer.page')!
+    const rpcSpans = exporter.getFinishedSpans().filter((s) => s.name === 'rpc.get_events')
+    expect(rpcSpans).toHaveLength(1)
+    const rpcSpan = rpcSpans[0]!
+    expect(rpcSpan.attributes['rpc.method']).toBe('getEvents')
+    expect(rpcSpan.attributes['rpc.retry_count']).toBe(0)
+    expect(rpcSpan.status.code).not.toBe(2) // SpanStatusCode.ERROR
+    expect(rpcSpan.parentSpanContext?.spanId).toBe(pageSpan.spanContext().spanId)
+  })
+
+  it('records an error status when the RPC call throws', async () => {
+    getEventsMock.mockRejectedValueOnce(new Error('rpc unavailable'))
+
+    await expect(fetchOnce('CSPANTEST')).rejects.toThrow('rpc unavailable')
+
+    const rpcSpans = exporter.getFinishedSpans().filter((s) => s.name === 'rpc.get_events')
+    expect(rpcSpans).toHaveLength(1)
+    expect(rpcSpans[0]!.status.code).toBe(2) // SpanStatusCode.ERROR
+    expect(rpcSpans[0]!.events.some((e) => e.name === 'exception')).toBe(true)
   })
 })
 

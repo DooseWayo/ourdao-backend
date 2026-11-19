@@ -90,6 +90,103 @@ export function createDedicatedClient(): Client {
 }
 
 /**
+ * Issue #584: a Postgres advisory lock distinct from REINDEX_LOCK_KEY
+ * (src/indexer/reindex.ts, held only for the duration of a reindex/replay
+ * fold, not ordinary polling) and MIGRATION_LOCK_KEY (src/db/migrate.ts,
+ * released as soon as migrate() returns) — this one is acquired once at
+ * worker startup and held on its own dedicated connection for the entire
+ * lifetime of the poll loop, so a container scheduler briefly running two
+ * worker instances during a handoff can't have both of them fold events
+ * concurrently (docs/DEPLOYMENT.md: the worker "must be a singleton").
+ *
+ * Scoped to the current schema (the second `hashtext(...)` key), matching
+ * every other advisory lock in this codebase, so parallel test workers —
+ * each given their own schema by test/setup.ts — don't block each other.
+ *
+ * `pg_try_advisory_lock` (non-blocking) rather than the blocking variant:
+ * a worker that can't acquire it should refuse to start loudly, not hang.
+ * It's a *session*-level lock (not `_xact_`), held on a connection that is
+ * never returned to `pool` and never closed until `release()` is called —
+ * exactly the same "standalone connection outside the pool, held for the
+ * life of the process" shape as the `/api/stream` listener connection above.
+ * Postgres releases a session-level advisory lock automatically when the
+ * holding connection closes, so a worker that crashes without calling
+ * `release()` frees the lock as soon as Postgres notices the dropped
+ * connection — no cleanup code has to run for that case.
+ */
+export const WORKER_LEADER_LOCK_KEY = 0x0d40_0002
+
+/** The two primitives `acquireWorkerLeaderLock` composes, exported
+ *  separately so a test can drive a raw connection directly — in
+ *  particular to simulate a crashed holder by dropping its connection
+ *  *without* going through the clean `release()` path below, which always
+ *  sends an explicit unlock first and so can't exercise Postgres's own
+ *  "session ended, release its locks" behavior. */
+export async function tryAcquireLeaderLock(client: Client): Promise<boolean> {
+  const result = await client.query<{ locked: boolean }>(
+    `SELECT pg_try_advisory_lock($1, hashtext(coalesce(current_schema(), ''))) AS locked`,
+    [WORKER_LEADER_LOCK_KEY]
+  )
+  return result.rows[0]?.locked ?? false
+}
+
+export async function releaseLeaderLock(client: Client): Promise<void> {
+  await client.query(
+    `SELECT pg_advisory_unlock($1, hashtext(coalesce(current_schema(), '')))`,
+    [WORKER_LEADER_LOCK_KEY]
+  )
+}
+
+export interface WorkerLeaderLock {
+  /** Releases the lock and closes its dedicated connection. Safe to call
+   *  more than once — only the first call does anything. */
+  release(): Promise<void>
+}
+
+/** Throws with an actionable message if another worker already holds the
+ *  lock (in this schema) — see the module doc comment above. */
+export async function acquireWorkerLeaderLock(): Promise<WorkerLeaderLock> {
+  const client = createDedicatedClient()
+  await client.connect()
+
+  let acquired: boolean
+  try {
+    acquired = await tryAcquireLeaderLock(client)
+  } catch (err) {
+    await client.end().catch(() => {})
+    throw err
+  }
+
+  if (!acquired) {
+    await client.end().catch(() => {})
+    throw new Error(
+      'Could not acquire the worker leader-election lock — another worker instance appears to already hold it ' +
+        'against this database/schema. Refusing to start a second indexer: running two concurrently can silently ' +
+        'corrupt derived state (vote tallies, contribution balances, and notification inserts are non-idempotent ' +
+        'increments with no database-level guard against being applied twice). Postgres releases a crashed ' +
+        "worker's lock automatically once it notices that connection is gone — if the other worker is not actually " +
+        'running, retry shortly. See docs/DEPLOYMENT.md "Leader election".'
+    )
+  }
+
+  let released = false
+  return {
+    async release(): Promise<void> {
+      if (released) return
+      released = true
+      try {
+        await releaseLeaderLock(client)
+      } catch {
+        // The connection may already be gone (e.g. the DB was unreachable) —
+        // nothing to explicitly unlock in that case; Postgres never held it.
+      } finally {
+        await client.end().catch(() => {})
+      }
+    },
+  }
+}
+
+/**
  * Issue #196: lift `statement_timeout` for the current transaction only, for
  * the deliberately long-running paths (reindex) that the pool-wide default
  * would otherwise kill. Must be called inside a `BEGIN` — `SET LOCAL` reverts

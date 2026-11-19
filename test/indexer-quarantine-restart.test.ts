@@ -24,12 +24,16 @@ const getEventsMock = vi.fn()
 
 // Mock RPC layer — constant hash across ledgers, these tests care only about
 // the quarantine behavior, not ledger hash mismatches
-vi.mock('../src/stellar/rpc.js', () => ({
+vi.mock('../src/stellar/rpc.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stellar/rpc.js')>()
+  return {
+    ...actual,
   server: { getEvents: (...args: unknown[]) => getEventsMock(...(args as [unknown])) },
   getLatestLedger: vi.fn().mockResolvedValue(100_000),
   getLatestLedgerInfo: vi.fn().mockResolvedValue({ sequence: 100_000, hash: 'HASH_TIP' }),
   getLedgerHash: vi.fn().mockResolvedValue('HASH_FOR_LEDGER'),
-}))
+  }
+})
 
 describe('indexer: quarantine escalation across restarts (issue #203)', () => {
   beforeEach(async () => {

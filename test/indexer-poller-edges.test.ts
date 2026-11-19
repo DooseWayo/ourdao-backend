@@ -19,12 +19,16 @@ vi.mock('../src/config.js', async (importOriginal) => {
 
 const getEventsMock = vi.fn()
 const getLedgerHashMock = vi.fn()
-vi.mock('../src/stellar/rpc.js', () => ({
+vi.mock('../src/stellar/rpc.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stellar/rpc.js')>()
+  return {
+    ...actual,
   server: { getEvents: (...args: unknown[]) => getEventsMock(...(args as [unknown])) },
   getLatestLedger: vi.fn().mockResolvedValue(100_000),
   getLatestLedgerInfo: vi.fn().mockResolvedValue({ sequence: 100_000, hash: 'HASH_TIP' }),
   getLedgerHash: (...args: unknown[]) => getLedgerHashMock(...(args as [number])),
-}))
+  }
+})
 
 const { fetchOnce, runIndexer, stopIndexer } = await import('../src/indexer/poller.js')
 const { replayFailedEvent, ReplayLockError } = await import('../src/indexer/replay.js')

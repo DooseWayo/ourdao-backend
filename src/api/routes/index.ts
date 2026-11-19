@@ -167,19 +167,64 @@ function toTimelineEntry(row: EventRow): TimelineEntry {
 // DAO's per-proposal event count; a client that hits it can page /api/events.
 const TIMELINE_MAX_ROWS = 2000
 
+// Issue #586: shared response schema for both timeline endpoints — `truncated`
+// (and `total`, the full matching-row count) let a client tell "capped at
+// TIMELINE_MAX_ROWS" apart from "this is everything", the way
+// loans_truncated/loans_total_count already do for the member-summary embed
+// (issue #165). Additive to the existing `{ timeline: [...] }` shape per
+// docs/API_COMPATIBILITY.md, so existing clients that ignore unrecognized
+// fields are unaffected.
+const timelineResponseSchema = {
+  type: 'object',
+  properties: {
+    timeline: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          symbol: { type: 'string' },
+          ledger: { type: 'integer' },
+          timestamp: { type: 'string' },
+          tx_hash: { type: 'string', nullable: true },
+          // additionalProperties: true — fast-json-stringify otherwise
+          // serializes an object schema with no declared keys as `{}`,
+          // which would silently drop every decoded field (issue #26's
+          // whole point: `fields.amount` instead of the raw data tuple).
+          fields: { type: 'object', additionalProperties: true },
+        },
+      },
+    },
+    truncated: { type: 'boolean', description: `true when more than ${TIMELINE_MAX_ROWS} rows matched and the response was capped.` },
+    total: { type: 'integer', description: 'Total matching rows, independent of the cap.' },
+  },
+} as const
+
 // Shared implementation for the two per-entity timeline endpoints. `symbols`
 // is the lifecycle set for the entity family; the id is matched against the
 // first `data` tuple entry (`data->>0`), which every symbol in these sets
 // carries — see LOAN_TIMELINE_SYMBOLS / TREASURY_TIMELINE_SYMBOLS.
-async function entityTimeline(symbols: readonly string[], id: string): Promise<TimelineEntry[]> {
-  const rows = await query<EventRow>(
-    `SELECT * FROM events
+//
+// Issue #586: `total_count` is a window-function count over every matching
+// row (computed before the `LIMIT`, unlike a plain COUNT(*) would need a
+// second query), so `truncated`/`total` come from this one query rather than
+// an extra round trip — matching how GET /api/members/:address/summary's
+// `loans_truncated`/`loans_total_count` (issue #165) make an analogous cap
+// visible instead of silent.
+async function entityTimeline(symbols: readonly string[], id: string): Promise<{ timeline: TimelineEntry[]; truncated: boolean; total: number }> {
+  const rows = await query<EventRow & { total_count: string }>(
+    `SELECT *, COUNT(*) OVER() AS total_count FROM events
        WHERE symbol = ANY($1) AND data->>0 = $2
        ORDER BY ledger ASC, id ASC
        LIMIT $3`,
     [symbols as string[], id, TIMELINE_MAX_ROWS]
   )
-  return rows.map(toTimelineEntry)
+  const total = rows.length > 0 ? Number(rows[0]!.total_count) : 0
+  return {
+    timeline: rows.map(toTimelineEntry),
+    truncated: total > TIMELINE_MAX_ROWS,
+    total,
+  }
 }
 
 // Issue #277: pulled out of the route handler so it can be called from
@@ -631,11 +676,17 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   // id covers the whole lifecycle. A nonexistent id returns an empty timeline
   // (200), not a 404 — the loan may simply have no events yet, and the caller
   // asked "what happened to this id", which is legitimately "nothing".
-  app.get<{ Params: { id: string } }>('/loans/:id/timeline', async (req, reply) => {
+  app.get<{ Params: { id: string } }>('/loans/:id/timeline', {
+    schema: {
+      tags: ['loans'],
+      summary: "A loan's full event history",
+      response: { 200: timelineResponseSchema },
+    },
+  }, async (req, reply) => {
     setCachePolicy(reply, 'public-live')
     const id = entityIdParam(req.params.id)
     if (id === null) return reply.code(400).send({ error: 'invalid loan id' })
-    return { timeline: await entityTimeline(LOAN_TIMELINE_SYMBOLS, id) }
+    return entityTimeline(LOAN_TIMELINE_SYMBOLS, id)
   })
 
   // --- Treasury proposals (optional ?status= filter) ---
@@ -703,11 +754,17 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   // proposals), executed. Loan and treasury proposal ids are drawn from
   // independent sequences and collide, so this is a distinct route rather
   // than a shared `/proposals/:id/timeline`. Same empty-not-404 contract.
-  app.get<{ Params: { id: string } }>('/proposals/treasury/:id/timeline', async (req, reply) => {
+  app.get<{ Params: { id: string } }>('/proposals/treasury/:id/timeline', {
+    schema: {
+      tags: ['proposals'],
+      summary: "A treasury proposal's full event history",
+      response: { 200: timelineResponseSchema },
+    },
+  }, async (req, reply) => {
     setCachePolicy(reply, 'public-live')
     const id = entityIdParam(req.params.id)
     if (id === null) return reply.code(400).send({ error: 'invalid proposal id' })
-    return { timeline: await entityTimeline(TREASURY_TIMELINE_SYMBOLS, id) }
+    return entityTimeline(TREASURY_TIMELINE_SYMBOLS, id)
   })
 
   // --- Notifications for an address (optional ?before=<id> cursor, optional ?unread=<boolean> filter)
