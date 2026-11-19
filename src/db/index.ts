@@ -1,5 +1,6 @@
 import { Client, Pool, types as pgTypes, type PoolClient, type QueryResultRow } from 'pg'
 import { config } from '../config.js'
+import { dbPoolIdleClientErrorsTotal } from '../api/metrics.js'
 
 // pg returns Postgres BIGINT (OID 20) as a JS string by default — the safe
 // choice, since a BIGINT can exceed Number.MAX_SAFE_INTEGER and would
@@ -67,6 +68,7 @@ export const pool = new Pool({
 pool.on('error', (err) => {
   // Background idle-client errors shouldn't crash the process.
   console.error('[db] unexpected idle client error:', err.message)
+  dbPoolIdleClientErrorsTotal.inc()
 })
 
 /**

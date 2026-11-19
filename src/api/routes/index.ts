@@ -407,7 +407,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   // cursor, like the other historical feeds.
   app.get<{ Params: { address: string } }>('/members/:address/activity', {
     schema: {
-      tags: ['Members'],
+      tags: ['members'],
       summary: "A member's cross-entity activity feed",
       querystring: {
         type: 'object',
@@ -648,7 +648,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   // --- Notifications for an address (optional ?before=<id> cursor, optional ?unread=<boolean> filter)
   app.get('/notifications', {
     schema: {
-      tags: ['Notifications'],
+      tags: ['notifications'],
       summary: 'Array of notifications',
       response: {
         200: {
@@ -719,7 +719,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
       },
     },
     schema: {
-      tags: ['Events'],
+      tags: ['events'],
       summary: 'Paginated event feed',
       response: {
         200: {
@@ -1520,7 +1520,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
 
   app.get('/stats', {
     schema: {
-      tags: ['Stats'],
+      tags: ['stats'],
       summary: 'DAO statistics',
       response: {
         200: {
@@ -1607,7 +1607,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
 
   app.get('/stats/history', {
     schema: {
-      tags: ['Stats'],
+      tags: ['stats'],
       summary: 'Historical daily loan aggregates',
       response: {
         200: {

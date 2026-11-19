@@ -142,3 +142,28 @@ thousands of events of one kind, where the heap filter over the GIN result
 would stop being negligible; at that point an index on
 `(symbol, (data->>...))` per address field would be the candidate, not a
 plain symbol/ledger btree.
+
+### Checking the revisit condition
+
+`npm run check:member-activity-threshold` reports the largest
+per-address-per-symbol event count currently in `events`, restricted to
+`MEMBER_ACTIVITY_SYMBOLS` — a direct answer to "has any member crossed the
+'tens of thousands of events of one kind' threshold above" rather than
+something that has to be re-derived by hand. It wraps
+`findMemberActivityHotspot()` (`src/db/member-activity-threshold.ts`), whose
+query is:
+
+```sql
+SELECT symbol, addr AS address, count(*) AS event_count
+  FROM events, jsonb_array_elements_text(data) AS addr
+ WHERE symbol = ANY(ARRAY[...MEMBER_ACTIVITY_SYMBOLS])
+   AND addr ~ '^G[A-Z2-7]{55}$'
+ GROUP BY symbol, addr
+ ORDER BY event_count DESC
+ LIMIT 1
+```
+
+This data changes slowly, so a manual or infrequent-scheduled run is
+sufficient — it is not meant to run on any request path. The revisit
+threshold itself (10,000 — "tens of thousands") is
+`MEMBER_ACTIVITY_EVENT_COUNT_REVISIT_THRESHOLD` in the same module.

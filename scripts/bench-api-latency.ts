@@ -36,7 +36,7 @@ async function seedDatabase() {
   console.log('[bench] Seeding database with realistic data...')
   
   // Check if database already has data
-  const { rows } = await query<{ count: string }>('SELECT COUNT(*) as count FROM events')
+  const rows = await query<{ count: string }>('SELECT COUNT(*) as count FROM events')
   const eventCount = parseInt(rows[0]?.count || '0', 10)
   
   if (eventCount > 0) {

@@ -21,6 +21,7 @@
     "bench:events": "tsx scripts/bench-events-storage.ts",
     "bench:api": "tsx scripts/bench-api-latency.ts",
     "bench:stream": "tsx scripts/load-test-stream.ts",
+    "check:member-activity-threshold": "tsx scripts/check-member-activity-threshold.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint .",
     "test": "vitest run",

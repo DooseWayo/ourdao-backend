@@ -78,7 +78,7 @@
       "get": {
         "summary": "A member's cross-entity activity feed",
         "tags": [
-          "Members"
+          "members"
         ],
         "parameters": [
           {
@@ -268,7 +268,7 @@
       "get": {
         "summary": "Array of notifications",
         "tags": [
-          "Notifications"
+          "notifications"
         ],
         "responses": {
           "200": {
@@ -347,7 +347,7 @@
       "get": {
         "summary": "Paginated event feed",
         "tags": [
-          "Events"
+          "events"
         ],
         "responses": {
           "200": {
@@ -742,7 +742,7 @@
       "get": {
         "summary": "DAO statistics",
         "tags": [
-          "Stats"
+          "stats"
         ],
         "responses": {
           "200": {
@@ -845,7 +845,7 @@
       "get": {
         "summary": "Historical daily loan aggregates",
         "tags": [
-          "Stats"
+          "stats"
         ],
         "responses": {
           "200": {

@@ -28,3 +28,12 @@ export const sseConnectionsTotal = new Counter({
   help: 'Total number of SSE stream connections opened',
   registers: [metricsRegistry],
 })
+
+/** Issue #595: the shared Postgres pool's `pool.on('error', ...)` handler
+ *  (src/db/index.ts) only logged a background idle-client error, with no
+ *  counter alongside it — invisible unless someone is grepping logs. */
+export const dbPoolIdleClientErrorsTotal = new Counter({
+  name: 'ourdao_db_pool_idle_client_errors_total',
+  help: "Total number of the shared Postgres pool's background idle-client errors",
+  registers: [metricsRegistry],
+})
