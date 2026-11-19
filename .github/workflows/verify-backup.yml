@@ -105,6 +105,7 @@ jobs:
           fi
 
       - name: Run backup verification script
+        id: verify_backup
         run: |
           if [ -n "${EXPECTED_EVENTS:-}" ]; then
             ./scripts/verify-backup.sh "$TEST_BACKUP_PATH" "$EXPECTED_EVENTS"
@@ -115,7 +116,7 @@ jobs:
       - name: Report verification results
         if: always()
         run: |
-          if [ $? -eq 0 ]; then
+          if [ "${{ steps.verify_backup.outcome }}" = "success" ]; then
             echo "✅ Backup verification PASSED"
           else
             echo "❌ Backup verification FAILED"

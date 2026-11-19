@@ -77,7 +77,7 @@ Run `npm run license:check` to validate all dependencies against this policy. Th
 
 ## Direct Dependency Changes
 
-Adding a new direct dependency (an entry in `dependencies` or `devDependencies` in `package.json`) requires explicit review. CI fails if `package.json` is modified and the PR description does not mention the dependency change, ensuring new dependencies are deliberate rather than accidental.
+Adding a new direct dependency (an entry in `dependencies` or `devDependencies` in `package.json`) requires explicit review. CI (`npm run check:dependency-description`, via `scripts/check-dependency-description.ts`) fails on pull requests if `package.json`'s `dependencies`/`devDependencies` are modified — added, removed, or version-bumped — and the PR description does not name every changed package, ensuring new dependencies are deliberate rather than accidental. A lockfile-only change, or any other `package.json` edit that doesn't touch those two fields, does not trigger this check.
 
 Transitive dependencies (dependencies of dependencies) are covered by the license check but do not require separate call-out—they are pulled in by direct dependencies already under review.
 
@@ -109,6 +109,7 @@ All licenses in the current tree are on the approved list. This baseline is reco
 
 ## Related
 
-- `.github/workflows/ci.yml` — CI job running `npm run license:check`
+- `.github/workflows/ci.yml` — CI job running `npm run license:check` and `npm run check:dependency-description`
 - `scripts/check-licenses.ts` — The license validation script
+- `scripts/check-dependency-description.ts` — The direct-dependency-change description check
 - `package.json` — Direct dependencies (additions require review)

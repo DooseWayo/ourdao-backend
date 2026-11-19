@@ -144,6 +144,24 @@
     },
     "/api/proposals/loan": {
       "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "rejected",
+                "cancelled",
+                "approved_pending_disbursement"
+              ]
+            },
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "description": "Filter by loan proposal status (issue #593). Must be one of LOAN_PROPOSAL_STATUSES; anything else is a 400."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Default Response"
@@ -172,6 +190,22 @@
     },
     "/api/loans": {
       "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "repaid",
+                "defaulted"
+              ]
+            },
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "description": "Filter by loan status."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Default Response"
@@ -219,6 +253,23 @@
     },
     "/api/proposals/treasury": {
       "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "executed",
+                "rejected",
+                "approved_pending_disbursement"
+              ]
+            },
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "description": "Filter by treasury proposal status (issue #593). Must be one of TREASURY_PROPOSAL_STATUSES; anything else is a 400."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Default Response"
@@ -349,44 +400,96 @@
         "tags": [
           "events"
         ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "joined",
+                "exited",
+                "claimed",
+                "loan_req",
+                "loan_edit",
+                "loan_vote",
+                "loan_wait",
+                "loan_rej",
+                "loan_appr",
+                "loan_rpy",
+                "loan_dflt",
+                "loan_exp",
+                "interest",
+                "tre_prop",
+                "tre_vote",
+                "tre_wait",
+                "tre_rej",
+                "tre_exec",
+                "staked",
+                "unstaked",
+                "name_reg",
+                "committed",
+                "revealed",
+                "doc_attn",
+                "init",
+                "admin_add",
+                "admin_rem",
+                "threshold",
+                "policy",
+                "paused",
+                "unpaused"
+              ]
+            },
+            "in": "query",
+            "name": "symbol",
+            "required": false,
+            "description": "Narrow the feed to one event symbol (issue #592). Must be one of the known event symbols; anything else is a 400."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Default Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "id": {
-                        "type": "string"
-                      },
-                      "ledger": {
-                        "type": "integer"
-                      },
-                      "closed_at": {
-                        "type": "string"
-                      },
-                      "contract_id": {
-                        "type": "string"
-                      },
-                      "symbol": {
-                        "type": "string"
-                      },
-                      "topics": {},
-                      "data": {},
-                      "tx_hash": {
-                        "type": "string",
-                        "nullable": true
-                      },
-                      "decode_error": {
-                        "type": "string",
-                        "nullable": true
-                      },
-                      "created_at": {
-                        "type": "string"
+                  "type": "object",
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "ledger": {
+                            "type": "integer"
+                          },
+                          "closed_at": {
+                            "type": "string"
+                          },
+                          "contract_id": {
+                            "type": "string"
+                          },
+                          "symbol": {
+                            "type": "string"
+                          },
+                          "topics": {},
+                          "data": {},
+                          "tx_hash": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "decode_error": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "created_at": {
+                            "type": "string"
+                          }
+                        }
                       }
+                    },
+                    "nextCursor": {
+                      "type": "string"
                     }
                   }
                 }
