@@ -124,9 +124,7 @@ See the README's [Database schema](./README.md#database-schema) section for the 
 
 ## Reporting a security issue
 
-**Do not open a public issue for a security vulnerability.** Use GitHub's [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability) on this repository.
-
-Include what you found, how to reproduce it, and what an attacker could do with it.
+**Do not open a public issue for a security vulnerability.** See [SECURITY.md](./SECURITY.md) for how to report one (GitHub's private vulnerability reporting) and what to include.
 
 ## License
 
