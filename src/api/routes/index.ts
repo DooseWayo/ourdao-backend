@@ -4,26 +4,31 @@ import { query, queryOne, withTransaction } from '../../db/index.js'
 import { config } from '../../config.js'
 import {
   ADMIN_EVENT_SYMBOLS,
+  EVENT_FIELDS,
   LOAN_TIMELINE_SYMBOLS,
   TREASURY_TIMELINE_SYMBOLS,
   MEMBER_ACTIVITY_SYMBOLS,
+  isKnownSymbol,
   namedFields,
 } from '../../stellar/events.js'
-import type {
-  DAOStats,
-  LoanProposalRow,
-  LoanRow,
-  MemberRow,
-  MemberSummary,
-  NotificationRow,
-  TreasuryProposalRow,
-  EventRow,
-  InterestDistributionRow,
-  DocumentRow,
-  FailedEventRow,
-  TimelineEntry,
-  AdminAuditLogRow,
-  AdminAuditAction,
+import {
+  LOAN_PROPOSAL_STATUSES,
+  LOAN_STATUSES,
+  TREASURY_PROPOSAL_STATUSES,
+  type DAOStats,
+  type LoanProposalRow,
+  type LoanRow,
+  type MemberRow,
+  type MemberSummary,
+  type NotificationRow,
+  type TreasuryProposalRow,
+  type EventRow,
+  type InterestDistributionRow,
+  type DocumentRow,
+  type FailedEventRow,
+  type TimelineEntry,
+  type AdminAuditLogRow,
+  type AdminAuditAction,
 } from '../../types.js'
 import { authenticateRequest, classifyStellarAddress, NonceStoreCapacityError, type NonceStore, type AuthFailureTracker } from '../../auth.js'
 import { getConnectedStreamCount, getNotificationFailureCount, registerStreamEndpoint } from '../stream.js'
@@ -474,7 +479,20 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   })
 
   // --- Loan proposals (optional ?status=, ?borrower= filters) ---
-  app.get('/proposals/loan', async (req, reply) => {
+  app.get('/proposals/loan', {
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            enum: [...LOAN_PROPOSAL_STATUSES],
+            description: 'Filter by loan proposal status (issue #593). Must be one of LOAN_PROPOSAL_STATUSES; anything else is a 400.',
+          },
+        },
+      },
+    },
+  }, async (req, reply) => {
     setCachePolicy(reply, 'public-live')
     const q = req.query as Record<string, unknown>
     if (invalidLimit(q.limit)) return reply.code(400).send({ error: 'invalid limit parameter' })
@@ -486,6 +504,15 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
       }
     }
     const borrower = typeof q.borrower === 'string' && q.borrower ? q.borrower : null
+
+    // Issue #593: an unrecognized ?status= is rejected explicitly, matching
+    // /api/loans's existing status validation — a typo'd status would
+    // otherwise silently return an empty page instead of a 400.
+    if (q.status !== undefined && q.status !== null && q.status !== '') {
+      if (typeof q.status !== 'string' || !(LOAN_PROPOSAL_STATUSES as readonly string[]).includes(q.status)) {
+        return reply.code(400).send({ error: `invalid status parameter: expected one of ${LOAN_PROPOSAL_STATUSES.join(', ')}` })
+      }
+    }
     const status = typeof q.status === 'string' && q.status ? q.status : null
 
     const conditions: string[] = []
@@ -525,7 +552,20 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   })
 
   // --- Loans (optional ?borrower= filter, ?status= filter, ?before=<id> cursor) ---
-  app.get('/loans', async (req, reply) => {
+  app.get('/loans', {
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            enum: [...LOAN_STATUSES],
+            description: 'Filter by loan status.',
+          },
+        },
+      },
+    },
+  }, async (req, reply) => {
     const q = req.query as Record<string, unknown>
     if (invalidLimit(q.limit)) return reply.code(400).send({ error: 'invalid limit parameter' })
     const l = limit(q.limit)
@@ -540,9 +580,12 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     }
     const borrower = typeof q.borrower === 'string' && q.borrower ? q.borrower : null
 
+    // Issue #593: validate against the shared LOAN_STATUSES constant
+    // (src/types.ts) instead of a locally duplicated array, so there is
+    // exactly one place this list is written down.
     if (q.status !== undefined && q.status !== null && q.status !== '') {
-      if (typeof q.status !== 'string' || !['active', 'repaid', 'defaulted'].includes(q.status)) {
-        return reply.code(400).send({ error: 'invalid status parameter' })
+      if (typeof q.status !== 'string' || !(LOAN_STATUSES as readonly string[]).includes(q.status)) {
+        return reply.code(400).send({ error: `invalid status parameter: expected one of ${LOAN_STATUSES.join(', ')}` })
       }
     }
     const status = typeof q.status === 'string' && q.status ? q.status : null
@@ -596,11 +639,33 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
   })
 
   // --- Treasury proposals (optional ?status= filter) ---
-  app.get('/proposals/treasury', async (req, reply) => {
+  app.get('/proposals/treasury', {
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            enum: [...TREASURY_PROPOSAL_STATUSES],
+            description: 'Filter by treasury proposal status (issue #593). Must be one of TREASURY_PROPOSAL_STATUSES; anything else is a 400.',
+          },
+        },
+      },
+    },
+  }, async (req, reply) => {
     setCachePolicy(reply, 'public-live')
     const q = req.query as Record<string, unknown>
     if (invalidLimit(q.limit)) return reply.code(400).send({ error: 'invalid limit parameter' })
     const l = limit(q.limit)
+
+    // Issue #593: an unrecognized ?status= is rejected explicitly, matching
+    // /api/loans's existing status validation — a typo'd status would
+    // otherwise silently return an empty page instead of a 400.
+    if (q.status !== undefined && q.status !== null && q.status !== '') {
+      if (typeof q.status !== 'string' || !(TREASURY_PROPOSAL_STATUSES as readonly string[]).includes(q.status)) {
+        return reply.code(400).send({ error: `invalid status parameter: expected one of ${TREASURY_PROPOSAL_STATUSES.join(', ')}` })
+      }
+    }
     const status = typeof q.status === 'string' && q.status ? q.status : null
 
     const conditions: string[] = []
@@ -721,23 +786,44 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     schema: {
       tags: ['events'],
       summary: 'Paginated event feed',
+      querystring: {
+        type: 'object',
+        properties: {
+          symbol: {
+            type: 'string',
+            enum: Object.keys(EVENT_FIELDS),
+            description: 'Narrow the feed to one event symbol (issue #592). Must be one of the known event symbols; anything else is a 400.',
+          },
+        },
+      },
       response: {
+        // Pre-existing mismatch fixed in passing: this declared the bare
+        // array shape, but the handler below has always returned
+        // `{ events, nextCursor }` — fast-json-stringify enforces the
+        // declared shape strictly, so every successful request 500'd before
+        // this fix (independently of the #592 symbol-validation change).
         200: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              ledger: { type: 'integer' },
-              closed_at: { type: 'string' },
-              contract_id: { type: 'string' },
-              symbol: { type: 'string' },
-              topics: {},
-              data: {},
-              tx_hash: { type: ['string', 'null'] },
-              decode_error: { type: ['string', 'null'] },
-              created_at: { type: 'string' },
+          type: 'object',
+          properties: {
+            events: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'string' },
+                  ledger: { type: 'integer' },
+                  closed_at: { type: 'string' },
+                  contract_id: { type: 'string' },
+                  symbol: { type: 'string' },
+                  topics: {},
+                  data: {},
+                  tx_hash: { type: ['string', 'null'] },
+                  decode_error: { type: ['string', 'null'] },
+                  created_at: { type: 'string' },
+                },
+              },
             },
+            nextCursor: { type: 'string' },
           },
         },
         400: {
@@ -773,7 +859,14 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
 
     setCachePolicy(reply, historicalOrLive(before !== null || after !== null))
 
+    // Issue #592: an unrecognized ?symbol= is rejected explicitly, matching
+    // /members/:address/activity's ?symbol= validation (issue #193) — the
+    // unfiltered query could never have returned it, so a silently empty
+    // page would only hide a client typo.
     const symbol = typeof q.symbol === 'string' && q.symbol ? q.symbol : null
+    if (symbol !== null && !isKnownSymbol(symbol)) {
+      return reply.code(400).send({ error: `invalid symbol filter: expected one of ${Object.keys(EVENT_FIELDS).join(', ')}` })
+    }
     const contract = typeof q.contract === 'string' && q.contract ? q.contract : null
     const decodeError = q.decode_error === 'true'
 
