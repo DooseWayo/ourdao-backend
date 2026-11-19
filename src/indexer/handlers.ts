@@ -748,6 +748,8 @@ export const channelMap: Record<string, StreamChannel | StreamChannel[]> = {
   tre_rej: STREAM_CHANNELS.treasury_proposals,
 
   interest: STREAM_CHANNELS.interest,
+
+  doc_attn: STREAM_CHANNELS.documents,
 }
 
 /** Apply one decoded event's side effects. Unknown symbols are a no-op

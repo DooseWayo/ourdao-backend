@@ -71,7 +71,7 @@ After the fold transaction commits successfully, the indexer calls `notifyStream
 
 ### 3. Listeners receive and fan out
 
-Each running API process maintains exactly **one shared Postgres LISTEN connection** for the life of the process (issue #152). This connection subscribes to all notification channels (`members_changed`, `loan_proposals_changed`, `loans_changed`, `treasury_proposals_changed`, `interest_changed`).
+Each running API process maintains exactly **one shared Postgres LISTEN connection** for the life of the process (issue #152). This connection subscribes to all notification channels (`members_changed`, `loan_proposals_changed`, `loans_changed`, `treasury_proposals_changed`, `interest_changed`, `documents_changed`).
 
 When a NOTIFY arrives on any channel, the shared listener's `dispatchStreamNotification()` function fans it out in-process to every `StreamClient` instance subscribed to that channel. Ten concurrent SSE clients, a hundred, or a thousand all cost the same one Postgres connection.
 

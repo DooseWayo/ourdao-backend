@@ -16,13 +16,15 @@ import {
   knownLedger,
   lastReorgLedger,
   notifyStreamClients,
+  notifyStreamClientsAfterCommit,
   notifyStreamClientsOrThrow,
   parseChannelSubset,
   resetConnectedStreamsForTests,
   shutdownSharedListener,
   streamLimits,
 } from '../src/api/stream.js'
-import { channelMap } from '../src/indexer/handlers.js'
+import { applyEvent, channelMap } from '../src/indexer/handlers.js'
+import { decodedEvent } from './fixtures.js'
 import type { FastifyReply } from 'fastify'
 
 // A minimal fake of the pieces of FastifyReply StreamClient actually uses, so
@@ -121,6 +123,7 @@ describe('API: /api/stream', () => {
       loans: 'loans_changed',
       treasury_proposals: 'treasury_proposals_changed',
       interest: 'interest_changed',
+      documents: 'documents_changed',
     })
 
     expect('notifications' in STREAM_CHANNELS).toBe(false)
@@ -133,6 +136,10 @@ describe('API: /api/stream', () => {
     for (const symbol of ['tre_prop', 'tre_vote', 'tre_exec', 'committed', 'revealed']) {
       expect(channelMap[symbol]).toBe(STREAM_CHANNELS.treasury_proposals)
     }
+  })
+
+  it('maps doc_attn to the documents stream channel (issue #587)', () => {
+    expect(channelMap.doc_attn).toBe(STREAM_CHANNELS.documents)
   })
 
   it('multiple concurrent clients can connect to the stream', async () => {
@@ -241,6 +248,7 @@ describe('Stream NOTIFY integration', () => {
     expect(STREAM_CHANNELS.loans).toBeDefined()
     expect(STREAM_CHANNELS.treasury_proposals).toBeDefined()
     expect(STREAM_CHANNELS.interest).toBeDefined()
+    expect(STREAM_CHANNELS.documents).toBeDefined()
   })
 
   it('stream channels match event symbol mappings', () => {
@@ -812,6 +820,31 @@ describe('Stream end-to-end over real Postgres', () => {
     expect(connected.data.payload).toMatchObject({ message: 'Connected to stream' })
     expect(real.event).toBe('notification')
     expect(real.data.payload).toMatchObject({ symbol: 'loan_disburse' })
+
+    res.destroy()
+  })
+
+  it('a doc_attn fold notifies connected clients on the documents channel (issue #587)', async () => {
+    const res = await openStream('/api/stream?channels=documents')
+    expect(res.statusCode).toBe(200)
+
+    const frames = collectSseFrames(res, 2)
+    await new Promise((r) => setTimeout(r, 100)) // let the shared listener finish LISTEN
+
+    const dbClient = await pool.connect()
+    try {
+      const ev = decodedEvent('doc_attn', { kind: 'Loan', proposal_id: 42, caller: 'GBORROWER' })
+      const channel = await applyEvent(dbClient, ev)
+      expect(channel).toBe(STREAM_CHANNELS.documents)
+      if (channel && !Array.isArray(channel)) await notifyStreamClientsAfterCommit(channel, { ledger: ev.ledger })
+    } finally {
+      dbClient.release()
+    }
+
+    const [connected, real] = await frames
+    if (!connected || !real) throw new Error('expected 2 frames')
+    expect(real.event).toBe('notification')
+    expect(real.data.channel).toBe(STREAM_CHANNELS.documents)
 
     res.destroy()
   })
