@@ -2,6 +2,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { PoolClient } from 'pg'
+import { config } from '../config.js'
 import { pool } from './index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -117,10 +118,13 @@ export async function migrate(): Promise<void> {
     // Issue #256: use pg_try_advisory_lock with polling loop instead of blocking
     // pg_advisory_lock to prevent indefinite hangs if a previous migration process
     // died while holding the lock.
-    const lockAcquired = await acquireMigrationLockWithTimeout(client, MIGRATION_LOCK_KEY, 30000)
+    // Issue #590: timeout is environment-driven (MIGRATION_LOCK_TIMEOUT_MS via
+    // src/config.ts), not a hardcoded literal — the default (30s) is unchanged.
+    const lockTimeoutMs = config.db.migrationLockTimeoutMs
+    const lockAcquired = await acquireMigrationLockWithTimeout(client, MIGRATION_LOCK_KEY, lockTimeoutMs)
     if (!lockAcquired) {
       throw new Error(
-        'Failed to acquire migration lock within 30 seconds. Another migration may be in progress, ' +
+        `Failed to acquire migration lock within ${lockTimeoutMs}ms. Another migration may be in progress, ` +
         'or a previous migration process may have died while holding the lock. ' +
         'If you are certain no other migration is running, restart the database connection pool ' +
         'to clear stale session locks.'

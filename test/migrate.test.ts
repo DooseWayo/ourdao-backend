@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client } from 'pg'
 import { afterAll, describe, expect, it } from 'vitest'
+import { config } from '../src/config.js'
 import { pool } from '../src/db/index.js'
 import { migrate, assertNoDuplicateVersions, MIGRATION_LOCK_KEY } from '../src/db/migrate.js'
 import { closeDb, ensureSchema } from './db.js'
@@ -246,5 +247,37 @@ describe('migrate() advisory lock scope (#367)', () => {
     await migrate()
     const holder = await holdLock('current_schema()')
     await holder.end()
+  })
+})
+
+// Issue #590: the lock-acquisition timeout used to be a literal 30000 in
+// src/db/migrate.ts, not sourced from config — this drives a short
+// MIGRATION_LOCK_TIMEOUT_MS against a held lock and asserts migrate() gives
+// up at that configured time, not the old hardcoded 30s.
+describe('migrate() migration lock timeout is configurable (issue #590)', () => {
+  it('fails fast when MIGRATION_LOCK_TIMEOUT_MS is lowered, rather than waiting the old 30s default', async () => {
+    const holder = new Client({ connectionString: process.env.DATABASE_URL })
+    await holder.connect()
+    const res = await holder.query<{ ok: boolean }>(
+      `SELECT pg_try_advisory_lock($1, hashtext(current_schema())) AS ok`,
+      [MIGRATION_LOCK_KEY]
+    )
+    expect(res.rows[0]?.ok).toBe(true)
+
+    const original = config.db.migrationLockTimeoutMs
+    Object.assign(config.db, { migrationLockTimeoutMs: 500 })
+    try {
+      const started = Date.now()
+      await expect(migrate()).rejects.toThrow(/Failed to acquire migration lock within 500ms/)
+      const elapsed = Date.now() - started
+      // Well under the old 30s hardcoded default — proves the configured
+      // value is actually used, not just read and ignored.
+      expect(elapsed).toBeLessThan(5_000)
+      expect(elapsed).toBeGreaterThanOrEqual(400)
+    } finally {
+      Object.assign(config.db, { migrationLockTimeoutMs: original })
+      await holder.query('SELECT pg_advisory_unlock($1, hashtext(current_schema()))', [MIGRATION_LOCK_KEY])
+      await holder.end()
+    }
   })
 })
