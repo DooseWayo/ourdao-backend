@@ -313,8 +313,43 @@ jobs:
           done
           echo "--- api logs ---"; docker logs api
           curl -fsS -o /dev/null -w 'GET /health -> %{http_code}\n' http://localhost:4000/health
-          docker rm -f api >/dev/null
           test "$status" = healthy
+
+      # Issue #602: /health deliberately does no database round trip (see the
+      # comment above), so a container that boots and answers /health has not
+      # proven that /ready — the probe docs/DEPLOYMENT.md tells operators to
+      # use as the load-balancer readiness check instead — works inside this
+      # same image, with the real runtime dependency tree (`npm ci
+      # --omit=dev`) installed. Reuses the `api` container already running
+      # against this job's Postgres service container, migrated by
+      # src/index.ts's `await migrate()` before it started listening.
+      - name: GET /ready reports ready against the migrated database
+        run: |
+          body="$(curl -fsS -w '\n%{http_code}' http://localhost:4000/ready)"
+          code="$(echo "$body" | tail -n1)"
+          json="$(echo "$body" | sed '$d')"
+          echo "GET /ready -> $code"
+          echo "$json"
+          docker rm -f api >/dev/null
+          test "$code" = 200
+          test "$(echo "$json" | jq -r .status)" = ready
+          # A cold-start empty database legitimately answers 'cold_start'
+          # (no indexer has run against this image) — don't require a
+          # fully-caught-up indexer, only that the shape matches what
+          # README/docs/DEPLOYMENT.md document.
+          indexer="$(echo "$json" | jq -r .indexer)"
+          case "$indexer" in
+            cold_start)
+              test "$(echo "$json" | jq -r .lastIndexedLedger)" = null
+              ;;
+            ok)
+              echo "$json" | jq -e '.lastIndexedLedger | type == "number"' >/dev/null
+              ;;
+            *)
+              echo "unexpected /ready indexer value: $indexer" >&2
+              exit 1
+              ;;
+          esac
 
       - name: worker entrypoint boots and exits 0 on SIGTERM
         run: |
