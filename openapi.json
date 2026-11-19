@@ -29,30 +29,6 @@
     },
     "/api/members": {
       "get": {
-        "summary": "Array of members",
-        "tags": [
-          "Members"
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "integer"
-            },
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "description": "Maximum number of members to return"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "in": "query",
-            "name": "before",
-            "required": false,
-            "description": "Pagination cursor"
-          }
-        ],
         "responses": {
           "200": {
             "description": "Default Response"
@@ -168,35 +144,6 @@
     },
     "/api/proposals/loan": {
       "get": {
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "in": "query",
-            "name": "status",
-            "required": false,
-            "description": "Filter by proposal status (e.g. pending, approved, rejected, cancelled, approved_pending_disbursement)"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "in": "query",
-            "name": "borrower",
-            "required": false,
-            "description": "Filter by borrower Stellar address"
-          },
-          {
-            "schema": {
-              "type": "integer"
-            },
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "description": "Maximum number of proposals to return"
-          }
-        ],
         "responses": {
           "200": {
             "description": "Default Response"
@@ -213,153 +160,21 @@
             },
             "in": "path",
             "name": "id",
-            "required": true,
-            "description": "Unique proposal id"
+            "required": true
           }
         ],
         "responses": {
           "200": {
             "description": "Default Response"
-          },
-          "404": {
-            "description": "Loan proposal not found"
           }
         }
       }
     },
     "/api/loans": {
       "get": {
-        "summary": "Array of loans",
-        "tags": [
-          "Loans"
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "enum": [
-                "active",
-                "repaid",
-                "defaulted"
-              ]
-            },
-            "in": "query",
-            "name": "status",
-            "required": false,
-            "description": "Filter by loan status"
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "in": "query",
-            "name": "borrower",
-            "required": false,
-            "description": "Filter by borrower Stellar address"
-          },
-          {
-            "schema": {
-              "type": "integer"
-            },
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "description": "Maximum number of loans to return"
-          },
-          {
-            "schema": {
-              "type": "integer"
-            },
-            "in": "query",
-            "name": "before",
-            "required": false,
-            "description": "Pagination cursor"
-          }
-        ],
         "responses": {
           "200": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "id": {
-                        "type": "integer"
-                      },
-                      "borrower": {
-                        "type": "string"
-                      },
-                      "amount": {
-                        "type": "string"
-                      },
-                      "outstanding": {
-                        "type": "string"
-                      },
-                      "total_repayment": {
-                        "type": "string"
-                      },
-                      "status": {
-                        "type": "string",
-                        "enum": [
-                          "active",
-                          "repaid",
-                          "defaulted"
-                        ]
-                      },
-                      "approved_ledger": {
-                        "type": "integer",
-                        "nullable": true
-                      },
-                      "due_time": {
-                        "type": "string",
-                        "nullable": true
-                      },
-                      "repaid_ledger": {
-                        "type": "integer",
-                        "nullable": true
-                      },
-                      "defaulted_ledger": {
-                        "type": "integer",
-                        "nullable": true
-                      },
-                      "updated_at": {
-                        "type": "string"
-                      },
-                      "interest_charge": {
-                        "type": "string",
-                        "nullable": true
-                      },
-                      "repaid_amount": {
-                        "type": "string",
-                        "nullable": true
-                      },
-                      "repayment_progress_bps": {
-                        "type": "integer",
-                        "nullable": true
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Default Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
+            "description": "Default Response"
           }
         }
       }
@@ -404,26 +219,6 @@
     },
     "/api/proposals/treasury": {
       "get": {
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "in": "query",
-            "name": "status",
-            "required": false,
-            "description": "Filter by proposal status (e.g. pending, executed, rejected, approved_pending_disbursement)"
-          },
-          {
-            "schema": {
-              "type": "integer"
-            },
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "description": "Maximum number of proposals to return"
-          }
-        ],
         "responses": {
           "200": {
             "description": "Default Response"
@@ -440,16 +235,12 @@
             },
             "in": "path",
             "name": "id",
-            "required": true,
-            "description": "Unique proposal id"
+            "required": true
           }
         ],
         "responses": {
           "200": {
             "description": "Default Response"
-          },
-          "404": {
-            "description": "Treasury proposal not found"
           }
         }
       }
@@ -1112,45 +903,317 @@
     },
     "/health": {
       "get": {
+        "summary": "Liveness probe",
+        "tags": [
+          "health"
+        ],
+        "description": "Always 200 if the process is up — deliberately does no database round trip. Use /ready to check database and indexer freshness.",
         "responses": {
           "200": {
-            "description": "Default Response"
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok"
+                      ]
+                    },
+                    "contract": {
+                      "type": "string",
+                      "description": "Currently configured Soroban contract id, or null if unset.",
+                      "nullable": true
+                    },
+                    "auth": {
+                      "type": "object",
+                      "properties": {
+                        "challengesIssued": {
+                          "type": "integer"
+                        },
+                        "verificationsSucceeded": {
+                          "type": "integer"
+                        },
+                        "verificationsFailed": {
+                          "type": "object",
+                          "properties": {
+                            "missingHeaders": {
+                              "type": "integer"
+                            },
+                            "invalidNonce": {
+                              "type": "integer"
+                            },
+                            "invalidSignature": {
+                              "type": "integer"
+                            },
+                            "addressMismatch": {
+                              "type": "integer"
+                            },
+                            "malformedEncoding": {
+                              "type": "integer"
+                            },
+                            "unsupportedAddressType": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
     },
     "/health/dependencies": {
       "get": {
+        "summary": "Per-dependency health indicators",
+        "tags": [
+          "health"
+        ],
+        "description": "Always 200 — a degraded dependency is reported in its own status field, not the HTTP status code. For dashboards/alerting; use /ready for the orchestrator pass/fail probe.",
         "responses": {
           "200": {
-            "description": "Default Response"
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "postgres": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ok",
+                            "degraded",
+                            "error"
+                          ]
+                        },
+                        "latencyMs": {
+                          "type": "integer"
+                        },
+                        "error": {
+                          "type": "string",
+                          "description": "Present only when status is \"error\"."
+                        }
+                      }
+                    },
+                    "rpc": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ok",
+                            "degraded",
+                            "error"
+                          ]
+                        },
+                        "latencyMs": {
+                          "type": "integer"
+                        },
+                        "error": {
+                          "type": "string",
+                          "description": "Present only when status is \"error\"."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
     },
     "/version": {
       "get": {
+        "summary": "Build metadata",
+        "tags": [
+          "health"
+        ],
         "responses": {
           "200": {
-            "description": "Default Response"
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "string",
+                      "description": "package.json's version, or 'unknown' if it couldn't be read."
+                    },
+                    "commit": {
+                      "type": "string",
+                      "description": "SOURCE_COMMIT env var, or 'unknown' if unset."
+                    },
+                    "buildDate": {
+                      "type": "string",
+                      "description": "BUILD_DATE env var, or 'unknown' if unset."
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
     },
     "/metrics": {
       "get": {
+        "summary": "Prometheus scrape endpoint",
+        "tags": [
+          "stats"
+        ],
+        "description": "Prometheus exposition format (text/plain). Exposes ourdao_sse_connections (gauge: currently open SSE connections), ourdao_sse_connections_total (counter: SSE connections opened, ever), ourdao_sse_messages_total (counter: SSE messages written, labeled by event_type), plus Node.js default process/runtime metrics from prom-client.",
         "responses": {
           "200": {
-            "description": "Default Response"
+            "description": "Default Response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       }
     },
     "/ready": {
       "get": {
+        "summary": "Readiness probe",
+        "tags": [
+          "health"
+        ],
+        "description": "Checks Postgres reachability and indexer freshness. 200 means ready (indexer 'cold_start' on an empty database is still 200 — see acceptance criteria). 503 covers every not-ready reason: postgres_timeout, postgres_unreachable, postgres_error, reorg_detected, indexer_stale.",
         "responses": {
           "200": {
-            "description": "Default Response"
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready"
+                      ]
+                    },
+                    "indexer": {
+                      "type": "string",
+                      "enum": [
+                        "cold_start",
+                        "ok"
+                      ]
+                    },
+                    "lastIndexedLedger": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "observedTipLedger": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "ledgersBehind": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "estimatedLagSeconds": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "secondsSinceUpdate": {
+                      "type": "integer",
+                      "nullable": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "not ready"
+                      ]
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "postgres_timeout",
+                        "postgres_unreachable",
+                        "postgres_error",
+                        "reorg_detected",
+                        "indexer_stale"
+                      ]
+                    },
+                    "reorg": {
+                      "type": "object",
+                      "description": "Present only when reason is reorg_detected.",
+                      "properties": {
+                        "detectedAt": {
+                          "type": "string"
+                        },
+                        "contractId": {
+                          "type": "string"
+                        },
+                        "lastLedger": {
+                          "type": "integer",
+                          "nullable": true
+                        },
+                        "detail": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "lastIndexedLedger": {
+                      "type": "integer",
+                      "description": "Present when reason is reorg_detected or indexer_stale.",
+                      "nullable": true
+                    },
+                    "observedTipLedger": {
+                      "type": "integer",
+                      "description": "Present when reason is reorg_detected or indexer_stale.",
+                      "nullable": true
+                    },
+                    "ledgersBehind": {
+                      "type": "integer",
+                      "description": "Present only when reason is indexer_stale.",
+                      "nullable": true
+                    },
+                    "estimatedLagSeconds": {
+                      "type": "integer",
+                      "description": "Present only when reason is indexer_stale.",
+                      "nullable": true
+                    },
+                    "secondsSinceUpdate": {
+                      "type": "integer",
+                      "description": "Present only when reason is indexer_stale."
+                    },
+                    "staleAfterMs": {
+                      "type": "integer",
+                      "description": "Present only when reason is indexer_stale."
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

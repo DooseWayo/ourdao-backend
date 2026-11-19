@@ -4,6 +4,7 @@ import { pool } from './db/index.js'
 import { buildServer, shutdownNonceStore } from './api/server.js'
 import { shutdownSharedListener, drainStreamClients } from './api/stream.js'
 import { initTelemetry, shutdownTelemetry } from './telemetry.js'
+import { closeRedis } from './cache/redis.js'
 
 const SHUTDOWN_TIMEOUT_MS = 10_000
 

@@ -353,7 +353,7 @@ describe('authenticateRequest — configurable nonce TTL (#372)', () => {
   const originalTtl = config.db.nonceTtlMs
 
   afterEach(() => {
-    config.db.nonceTtlMs = originalTtl
+    Object.assign(config.db, { nonceTtlMs: originalTtl })
     vi.useRealTimers()
   })
 
@@ -363,7 +363,7 @@ describe('authenticateRequest — configurable nonce TTL (#372)', () => {
 
   it('accepts a nonce older than 5 minutes when NONCE_TTL_MS is longer', async () => {
     vi.useFakeTimers()
-    config.db.nonceTtlMs = 10 * 60 * 1000
+    Object.assign(config.db, { nonceTtlMs: 10 * 60 * 1000 })
     const store = new MemoryNonceStore()
     const nonce = await store.issue(G)
     vi.advanceTimersByTime(6 * 60 * 1000)
@@ -373,7 +373,7 @@ describe('authenticateRequest — configurable nonce TTL (#372)', () => {
 
   it('rejects a nonce younger than 5 minutes once a shorter NONCE_TTL_MS has passed', async () => {
     vi.useFakeTimers()
-    config.db.nonceTtlMs = 60 * 1000
+    Object.assign(config.db, { nonceTtlMs: 60 * 1000 })
     const store = new MemoryNonceStore()
     const nonce = await store.issue(G)
     vi.advanceTimersByTime(2 * 60 * 1000)

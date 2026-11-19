@@ -1584,14 +1584,14 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
         try {
           const value = await computeStats()
           statsCache = { at: Date.now(), value }
-          return { ...value, connectedStreams: liveStreams }
+          return { ...value, connectedStreams: live.connectedStreams }
         } catch (err) {
           // A successful prior value remains useful during a transient database
           // failure. Surface that it is stale while retaining the normal shape.
           if (statsCache) {
             app.log.warn({ err }, 'stats recompute failed; serving stale cached value')
             reply.header('X-Data-Stale', 'true')
-            return { ...statsCache.value, connectedStreams: liveStreams }
+            return { ...statsCache.value, connectedStreams: live.connectedStreams }
           }
           throw err
         }

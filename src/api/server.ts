@@ -17,7 +17,10 @@ import { MemoryNonceStore, PostgresNonceStore, AuthFailureTracker, getAuthStats,
 import { readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
+import { closeRedis } from '../cache/redis.js'
 import { metricsRegistry } from './metrics.js'
+import { server as rpcServer } from '../stellar/rpc.js'
+import type { ReorgHalt } from '../indexer/poller.js'
 // Stellar's nominal ledger close time, used to convert a lag in ledgers into
 // an estimated lag in seconds for the /ready readiness probe.
 const STELLAR_LEDGER_CLOSE_TIME_SECONDS = 5
@@ -42,8 +45,13 @@ interface PackageJson {
   version: string
 }
 
+interface PackageVersionResult {
+  version: string
+  error?: unknown
+}
+
 // Helper to read package.json version
-function readPackageVersion(): string {
+function readPackageVersion(): PackageVersionResult {
   try {
     const __dirname = dirname(fileURLToPath(import.meta.url))
     const pkgPath = join(__dirname, '../../package.json')
@@ -53,6 +61,9 @@ function readPackageVersion(): string {
     return { version: 'unknown', error }
   }
 }
+
+/** The four columns server.ts reads off reorg_halts for /ready's uncleared-halt check. */
+type ReorgHaltRow = Pick<ReorgHalt, 'contract_id' | 'last_ledger' | 'detail' | 'detected_at'>
 
 const packageVersionResult = readPackageVersion()
 
@@ -182,7 +193,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   if (config.db.nonceStore === 'postgres') {
     nonceStore = new PostgresNonceStore(pool, app.log)
   } else {
-    nonceStore = new MemoryNonceStore(app.log)
+    nonceStore = new MemoryNonceStore()
   }
   // Issue #207: store the nonce store for shutdown access
   activeNonceStore = nonceStore
@@ -273,11 +284,48 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   await app.register(registerRoutes, { prefix: '/api', nonceStore, authFailureTracker })
 
   // ── Liveness probe (issue #2, #403) — no DB round trip ──
-  app.get('/health', async () => ({
-    status: 'ok',
-    contract: config.stellar.contractId || null,
-    auth: getAuthStats(),
-  }))
+  app.get(
+    '/health',
+    {
+      schema: {
+        tags: ['health'],
+        summary: 'Liveness probe',
+        description: 'Always 200 if the process is up — deliberately does no database round trip. Use /ready to check database and indexer freshness.',
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              status: { type: 'string', enum: ['ok'] },
+              contract: { type: ['string', 'null'], description: 'Currently configured Soroban contract id, or null if unset.' },
+              auth: {
+                type: 'object',
+                properties: {
+                  challengesIssued: { type: 'integer' },
+                  verificationsSucceeded: { type: 'integer' },
+                  verificationsFailed: {
+                    type: 'object',
+                    properties: {
+                      missingHeaders: { type: 'integer' },
+                      invalidNonce: { type: 'integer' },
+                      invalidSignature: { type: 'integer' },
+                      addressMismatch: { type: 'integer' },
+                      malformedEncoding: { type: 'integer' },
+                      unsupportedAddressType: { type: 'integer' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async () => ({
+      status: 'ok',
+      contract: config.stellar.contractId || null,
+      auth: getAuthStats(),
+    })
+  )
 
   // ── Dependency health indicators (issue #276) ──
   // Separate from `/health` (liveness — deliberately no DB round trip) and
@@ -287,59 +335,180 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
   // so an operator can tell which dependency is degraded at a glance. Always
   // returns 200 — a dependency being down is reported in its own `status`
   // field, not via the HTTP status code.
-  app.get('/health/dependencies', async () => {
-    const timeout = (ms: number) =>
-      new Promise((_resolve, reject) => {
-        setTimeout(() => reject(new Error('timed out')), ms)
-      })
+  const dependencyStatusSchema = {
+    type: 'object',
+    properties: {
+      status: { type: 'string', enum: ['ok', 'degraded', 'error'] },
+      latencyMs: { type: 'integer' },
+      error: { type: 'string', description: 'Present only when status is "error".' },
+    },
+  } as const
 
-    const [postgres, rpc] = await Promise.all([
-      (async () => {
-        const startedAt = Date.now()
-        try {
-          await Promise.race([pool.query('SELECT 1'), timeout(config.http.readyCheckTimeoutMs)])
-          return { status: 'ok' as const, latencyMs: Date.now() - startedAt }
-        } catch (error) {
-          return {
-            status: 'error' as const,
-            latencyMs: Date.now() - startedAt,
-            error: error instanceof Error ? error.message : String(error),
-          }
-        }
-      })(),
-      (async () => {
-        const startedAt = Date.now()
-        try {
-          const health = await Promise.race([rpcServer.getHealth(), timeout(config.http.readyCheckTimeoutMs)]) as { status: string }
-          return { status: health.status === 'healthy' ? ('ok' as const) : ('degraded' as const), latencyMs: Date.now() - startedAt }
-        } catch (error) {
-          return {
-            status: 'error' as const,
-            latencyMs: Date.now() - startedAt,
-            error: error instanceof Error ? error.message : String(error),
-          }
-        }
-      })(),
-    ])
+  app.get(
+    '/health/dependencies',
+    {
+      schema: {
+        tags: ['health'],
+        summary: 'Per-dependency health indicators',
+        description: 'Always 200 — a degraded dependency is reported in its own status field, not the HTTP status code. For dashboards/alerting; use /ready for the orchestrator pass/fail probe.',
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              postgres: dependencyStatusSchema,
+              rpc: dependencyStatusSchema,
+            },
+          },
+        },
+      },
+    },
+    async () => {
+      const timeout = (ms: number) =>
+        new Promise((_resolve, reject) => {
+          setTimeout(() => reject(new Error('timed out')), ms)
+        })
 
-    return { postgres, rpc }
-  })
+      const [postgres, rpc] = await Promise.all([
+        (async () => {
+          const startedAt = Date.now()
+          try {
+            await Promise.race([pool.query('SELECT 1'), timeout(config.http.readyCheckTimeoutMs)])
+            return { status: 'ok' as const, latencyMs: Date.now() - startedAt }
+          } catch (error) {
+            return {
+              status: 'error' as const,
+              latencyMs: Date.now() - startedAt,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          }
+        })(),
+        (async () => {
+          const startedAt = Date.now()
+          try {
+            const health = (await Promise.race([rpcServer.getHealth(), timeout(config.http.readyCheckTimeoutMs)])) as { status: string }
+            return { status: health.status === 'healthy' ? ('ok' as const) : ('degraded' as const), latencyMs: Date.now() - startedAt }
+          } catch (error) {
+            return {
+              status: 'error' as const,
+              latencyMs: Date.now() - startedAt,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          }
+        })(),
+      ])
+
+      return { postgres, rpc }
+    }
+  )
 
   // ── Version endpoint (issue #64) — build metadata ──
-  app.get('/version', async () => ({
-    version: packageVersionResult.version,
-    commit: process.env.SOURCE_COMMIT ?? 'unknown',
-    buildDate: process.env.BUILD_DATE ?? 'unknown',
-  }))
+  app.get(
+    '/version',
+    {
+      schema: {
+        tags: ['health'],
+        summary: 'Build metadata',
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              version: { type: 'string', description: "package.json's version, or 'unknown' if it couldn't be read." },
+              commit: { type: 'string', description: "SOURCE_COMMIT env var, or 'unknown' if unset." },
+              buildDate: { type: 'string', description: "BUILD_DATE env var, or 'unknown' if unset." },
+            },
+          },
+        },
+      },
+    },
+    async () => ({
+      version: packageVersionResult.version,
+      commit: process.env.SOURCE_COMMIT ?? 'unknown',
+      buildDate: process.env.BUILD_DATE ?? 'unknown',
+    })
+  )
 
   // ── Prometheus metrics (issue #274) — SSE connection count + message throughput ──
-  app.get('/metrics', async (_req, reply) => {
-    reply.header('Content-Type', metricsRegistry.contentType)
-    return metricsRegistry.metrics()
-  })
+  app.get(
+    '/metrics',
+    {
+      schema: {
+        tags: ['stats'],
+        summary: 'Prometheus scrape endpoint',
+        description:
+          'Prometheus exposition format (text/plain). Exposes ourdao_sse_connections (gauge: currently open SSE connections), ' +
+          'ourdao_sse_connections_total (counter: SSE connections opened, ever), ourdao_sse_messages_total (counter: SSE messages ' +
+          'written, labeled by event_type), plus Node.js default process/runtime metrics from prom-client.',
+        response: {
+          200: {
+            content: {
+              'text/plain': {
+                schema: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (_req, reply) => {
+      reply.header('Content-Type', metricsRegistry.contentType)
+      return metricsRegistry.metrics()
+    }
+  )
 
   // ── Readiness probe (issue #2) — checks DB + indexer freshness ──
-  app.get('/ready', async (req, reply) => {
+  app.get(
+    '/ready',
+    {
+      schema: {
+        tags: ['health'],
+        summary: 'Readiness probe',
+        description:
+          "Checks Postgres reachability and indexer freshness. 200 means ready (indexer 'cold_start' on an empty " +
+          "database is still 200 — see acceptance criteria). 503 covers every not-ready reason: postgres_timeout, " +
+          'postgres_unreachable, postgres_error, reorg_detected, indexer_stale.',
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              status: { type: 'string', enum: ['ready'] },
+              indexer: { type: 'string', enum: ['cold_start', 'ok'] },
+              lastIndexedLedger: { type: ['integer', 'null'] },
+              observedTipLedger: { type: ['integer', 'null'] },
+              ledgersBehind: { type: ['integer', 'null'] },
+              estimatedLagSeconds: { type: ['integer', 'null'] },
+              secondsSinceUpdate: { type: ['integer', 'null'] },
+            },
+          },
+          503: {
+            type: 'object',
+            properties: {
+              status: { type: 'string', enum: ['not ready'] },
+              reason: {
+                type: 'string',
+                enum: ['postgres_timeout', 'postgres_unreachable', 'postgres_error', 'reorg_detected', 'indexer_stale'],
+              },
+              reorg: {
+                type: 'object',
+                description: 'Present only when reason is reorg_detected.',
+                properties: {
+                  detectedAt: { type: 'string' },
+                  contractId: { type: 'string' },
+                  lastLedger: { type: ['integer', 'null'] },
+                  detail: { type: 'string' },
+                },
+              },
+              lastIndexedLedger: { type: ['integer', 'null'], description: 'Present when reason is reorg_detected or indexer_stale.' },
+              observedTipLedger: { type: ['integer', 'null'], description: 'Present when reason is reorg_detected or indexer_stale.' },
+              ledgersBehind: { type: ['integer', 'null'], description: 'Present only when reason is indexer_stale.' },
+              estimatedLagSeconds: { type: ['integer', 'null'], description: 'Present only when reason is indexer_stale.' },
+              secondsSinceUpdate: { type: 'integer', description: 'Present only when reason is indexer_stale.' },
+              staleAfterMs: { type: 'integer', description: 'Present only when reason is indexer_stale.' },
+            },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
     // 1. Postgres reachable, and within a bounded time (issue #167). The
     // `catch` below only ever sees the query itself fail (refused, auth
     // error) — it never fired for a *hung* database, since `pool.query`

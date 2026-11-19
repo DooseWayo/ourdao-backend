@@ -222,6 +222,7 @@ Base path: `/api`.
 |---|---|
 | `GET /health` | Liveness check + the currently configured contract id. No DB round trip. |
 | `GET /ready` | Readiness probe — checks Postgres reachability and indexer freshness. Returns `503` with a `reason` when Postgres is down or the indexer cursor is stale. |
+| `GET /metrics` | Prometheus metrics: SSE connection count/message throughput plus default Node.js process metrics. |
 | `GET /api/stats` | Aggregate counts (members, loans, proposals) + defaulted-loan count/value + lifetime money figures (`interestCollected`, `principalLent`, `principalRepaid`, `valueDefaulted`, all decimal strings) + `quarantinedEvents` (issue #43) + `lastIndexedLedger` (highest ledger actually folded) and `observedTipLedger` (RPC-observed chain tip, issue #45) as the useful "folded to X, chain is at Y" pair + `connectedStreams` (live SSE connection count on this process, issue #156) + `notificationFailures` (count of failed stream NOTIFYs since process start, issue #169). Cached in-process for `STATS_CACHE_MS` (except `connectedStreams`/`notificationFailures`, which are always live); sets `Cache-Control`. With more than one API instance the cached figures may briefly disagree. |
 | `GET /api/interest` | Interest-distribution history — one row per `interest` event (`amount` collected, `active_members` at that distribution). `?before=<ledger>` cursor. |
 | `GET /api/members` | Active members. |
@@ -246,6 +247,7 @@ Base path: `/api`.
 - `GET /health` — Liveness check + currently configured contract id (no DB round trip)
 - `GET /ready` — Readiness probe (checks Postgres reachability and indexer freshness; a recorded ledger discontinuity answers `503` with `reason: reorg_detected`, see [Reorg detection](#reorg-detection); a failing indexer-state query other than a missing table answers `503` with `reason: postgres_error`, issue #347)
 - `GET /version` — Build metadata (version, commit, build date)
+- `GET /metrics` — Prometheus scrape endpoint (issue #274): `ourdao_sse_connections` (gauge, currently open SSE connections), `ourdao_sse_connections_total` (counter, SSE connections opened ever), `ourdao_sse_messages_total` (counter, SSE messages written, labeled by `event_type`), plus Node.js's default process/runtime metrics
 - `GET /api/stats` — Aggregate DAO statistics (members, loans, proposals, money figures, quarantine count, indexer state, and `reorgDetected`/`reorgHalt` for an uncleared ledger discontinuity)
 - `GET /api/stats/history` — Daily loan principal lent/repaid, defaults, defaulted value, and cumulative default rate (`data` timeseries; money values are decimal strings)
 
