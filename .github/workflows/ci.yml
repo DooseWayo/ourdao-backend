@@ -70,6 +70,12 @@ jobs:
       - name: License check
         run: npm run license:check
 
+      # Issue #580: README's "N tests across M files" sentence drifted stale
+      # twice already from hand-editing alone — re-derive both numbers from
+      # test/ on every run instead of trusting the comment to stay current.
+      - name: README test counts are up to date
+        run: npm run check:readme-test-counts
+
       # Issue #591: docs/DEPENDENCY-LICENSES.md documents that CI fails when
       # package.json's dependencies/devDependencies change without the PR
       # description naming the change — this step is that check. Only
