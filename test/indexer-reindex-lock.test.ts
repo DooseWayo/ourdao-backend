@@ -8,14 +8,18 @@ import { decodedEvent } from './fixtures.js'
 import type { DecodedEvent } from '../src/stellar/events.js'
 import { applyEvent } from '../src/indexer/handlers.js'
 
-vi.mock('../src/stellar/rpc.js', () => ({
+vi.mock('../src/stellar/rpc.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stellar/rpc.js')>()
+  return {
+    ...actual,
   server: {
     getEvents: vi.fn(),
     getLatestLedger: vi.fn().mockResolvedValue(100),
   },
   getLatestLedger: vi.fn().mockResolvedValue(100),
   getLatestLedgerInfo: vi.fn().mockResolvedValue({ sequence: 100, hash: 'HASH_100' }),
-}))
+  }
+})
 
 import { server } from '../src/stellar/rpc.js'
 

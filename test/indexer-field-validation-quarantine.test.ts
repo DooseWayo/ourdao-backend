@@ -42,12 +42,16 @@ vi.mock('../src/stellar/events.js', async (importOriginal) => {
 })
 
 const getEventsMock = vi.fn()
-vi.mock('../src/stellar/rpc.js', () => ({
+vi.mock('../src/stellar/rpc.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stellar/rpc.js')>()
+  return {
+    ...actual,
   server: { getEvents: (...args: unknown[]) => getEventsMock(...(args as [unknown])) },
   getLatestLedger: vi.fn().mockResolvedValue(100_000),
   getLatestLedgerInfo: vi.fn().mockResolvedValue({ sequence: 100_000, hash: 'HASH_TIP' }),
   getLedgerHash: vi.fn().mockResolvedValue('HASH_FOR_LEDGER'),
-}))
+  }
+})
 
 const CONTRACT = 'CTESTCONTRACT'
 

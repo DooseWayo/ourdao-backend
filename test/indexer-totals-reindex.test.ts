@@ -11,11 +11,15 @@ import type { DecodedEvent } from '../src/stellar/events.js'
 // Only poller.ts pulls in stellar/rpc.ts; mocking it here keeps the network
 // out and lets the discontinuity test drive getLatestLedgerInfo. The RPC's
 // reported tip (sequence 40) sits below the cursor the test seeds (500).
-vi.mock('../src/stellar/rpc.js', () => ({
+vi.mock('../src/stellar/rpc.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/stellar/rpc.js')>()
+  return {
+    ...actual,
   server: { getEvents: vi.fn().mockResolvedValue({ events: [] }), getLatestLedger: vi.fn() },
   getLatestLedger: vi.fn().mockResolvedValue(40),
   getLatestLedgerInfo: vi.fn().mockResolvedValue({ sequence: 40, hash: 'HASH_LOW' }),
-}))
+  }
+})
 
 /** Simulate one ingested event: raw log row + derived fold, the way
  *  poller.ingestPage does. */

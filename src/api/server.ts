@@ -277,7 +277,8 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
     keyGenerator: (req: { ip?: string; socket?: { remoteAddress?: string } }) => req.ip ?? req.socket?.remoteAddress ?? 'unknown',
     addHeadersOnExceeding: { 'x-ratelimit-limit': true, 'x-ratelimit-remaining': true, 'x-ratelimit-reset': true },
     addHeaders: { 'x-ratelimit-limit': true, 'x-ratelimit-remaining': true, 'x-ratelimit-reset': true, 'retry-after': true },
-    allowList: (req: { url: string }) => req.url === '/health' || req.url === '/ready' || req.url === '/version' || req.url === '/metrics',
+    allowList: (req: { url: string }) =>
+      req.url === '/health' || req.url === '/health/dependencies' || req.url === '/ready' || req.url === '/version' || req.url === '/metrics',
   })
 
   // ── Routes (including /api/stream — issue #158) ──
