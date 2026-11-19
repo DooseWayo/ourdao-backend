@@ -17,6 +17,7 @@ import { MemoryNonceStore, PostgresNonceStore, AuthFailureTracker, getAuthStats,
 import { readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
+import { metricsRegistry } from './metrics.js'
 // Stellar's nominal ledger close time, used to convert a lag in ledgers into
 // an estimated lag in seconds for the /ready readiness probe.
 const STELLAR_LEDGER_CLOSE_TIME_SECONDS = 5
