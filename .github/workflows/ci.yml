@@ -70,6 +70,12 @@ jobs:
       - name: License check
         run: npm run license:check
 
+      # Issue #580: README's "N tests across M files" sentence drifted stale
+      # twice already from hand-editing alone — re-derive both numbers from
+      # test/ on every run instead of trusting the comment to stay current.
+      - name: README test counts are up to date
+        run: npm run check:readme-test-counts
+
       # Issue #591: docs/DEPENDENCY-LICENSES.md documents that CI fails when
       # package.json's dependencies/devDependencies change without the PR
       # description naming the change — this step is that check. Only
@@ -384,3 +390,33 @@ jobs:
           echo "worker exit code: $code"
           docker rm -f worker >/dev/null
           test "$code" = 0
+
+      # Issue #581: the API and worker entrypoints above are smoke-tested
+      # inside this built image, but `node dist/indexer/reindex.js` — the
+      # documented recovery path for a detected reorg and for quarantined-
+      # event repair (docs/REORG_RECOVERY.md, docs/DEPLOYMENT.md's "Backup
+      # and recovery") — never was. Reuses this job's existing Postgres
+      # service and DB_URL, already migrated by the API step above, and
+      # seeds one raw `joined` event so the run has something real to fold.
+      - name: node dist/indexer/reindex.js rebuilds derived tables from the event log
+        run: |
+          set -e
+          psql "$DB_URL" -c "
+            INSERT INTO events (id, ledger, closed_at, contract_id, symbol, topics, data, tx_hash)
+            VALUES (
+              'reindex-smoke-0000000001', 900000, now(), 'CTEST', 'joined',
+              '[\"joined\"]'::jsonb,
+              '[\"GREINDEXSMOKETESTMEMBERADDRESS0000000000000\", \"1000\"]'::jsonb,
+              'reindex-smoke-tx'
+            )
+          "
+          docker run --rm --network host \
+            -e DATABASE_URL="$DB_URL" -e CONTRACT_ID=CTEST \
+            "$IMAGE" node dist/indexer/reindex.js
+          member_count="$(psql "$DB_URL" -tAc "
+            SELECT count(*) FROM members
+            WHERE address = 'GREINDEXSMOKETESTMEMBERADDRESS0000000000000'
+              AND contribution = '1000'
+          ")"
+          echo "members row(s) derived from the seeded event: $member_count"
+          test "$member_count" = 1
