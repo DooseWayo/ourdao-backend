@@ -195,6 +195,14 @@ export function resolveConfig(env: NodeJS.ProcessEnv) {
     // process role (`OURDAO_PROCESS_ROLE`, set by src/worker.ts before the
     // pool is created, defaulting to `api`).
     applicationName: str(env, 'DB_APPLICATION_NAME') || `ourdao-${str(env, 'OURDAO_PROCESS_ROLE', 'api')}`,
+    // Issue #590: how long migrate() (called by both the API and worker on
+    // every boot) waits to acquire the migration advisory lock before giving
+    // up, previously a literal 30000 hardcoded in src/db/migrate.ts. Kept at
+    // the same default so existing deployments see no behavior change unless
+    // they opt in — a deployment with an unusually slow migration (a large
+    // ALTER on an existing database) or a contended environment can now raise
+    // it without a code change.
+    migrationLockTimeoutMs: int(env, 'MIGRATION_LOCK_TIMEOUT_MS', 30_000),
   },
   stellar: {
     contractId: str(env, 'CONTRACT_ID'),

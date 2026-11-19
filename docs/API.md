@@ -32,6 +32,7 @@ The stream broadcasts lightweight change signals—not full payloads. Clients re
 | `loans`              | Loan lifecycle events     | Disbursements, repayments, defaults                                    |
 | `treasury_proposals` | Treasury proposal updates | New treasury proposals, votes, executions                              |
 | `interest`           | Interest distributions    | Interest collected and distributed to members                          |
+| `documents`          | Document attachment history | A document attached to a loan or treasury proposal (`doc_attn`)      |
 
 **Example: Subscribe to specific channels**
 

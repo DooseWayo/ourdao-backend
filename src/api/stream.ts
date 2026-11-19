@@ -58,6 +58,7 @@ export const STREAM_CHANNELS = {
   loans: 'loans_changed',
   treasury_proposals: 'treasury_proposals_changed',
   interest: 'interest_changed',
+  documents: 'documents_changed',
 } as const
 
 export type StreamChannel = typeof STREAM_CHANNELS[keyof typeof STREAM_CHANNELS]

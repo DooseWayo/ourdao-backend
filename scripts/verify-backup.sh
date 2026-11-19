@@ -22,7 +22,12 @@
 set -euo pipefail
 
 # Configuration
-POSTGRES_VERSION="${POSTGRES_VERSION:-17}"
+# Matches the Postgres major version this project actually runs against
+# everywhere else (docker-compose.yml, ci.yml, mutation.yml, bench-events.yml):
+# verifying a backup restores cleanly into a different major version than
+# production doesn't say anything about restoring into the version actually
+# deployed (issue #588).
+POSTGRES_VERSION="${POSTGRES_VERSION:-16}"
 CONTAINER_NAME="ourdao-backup-verify-$$"
 POSTGRES_PASSWORD="verify-temp-$(date +%s)"
 POSTGRES_USER="postgres"

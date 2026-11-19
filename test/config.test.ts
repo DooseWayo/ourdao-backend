@@ -139,6 +139,7 @@ describe('resolveConfig', () => {
         connectionTimeoutMs: 5000,
         idleTimeoutMs: 30000,
         applicationName: 'ourdao-api',
+        migrationLockTimeoutMs: 30000,
       },
       stellar: {
         contractId: '',
