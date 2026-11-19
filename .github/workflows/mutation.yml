@@ -12,9 +12,22 @@ on:
     - cron: '0 3 * * 1' # Weekly at 03:00 UTC on Mondays
   workflow_dispatch:
 
+# A manual re-run must never race the Monday scheduled run against the same
+# serialized (concurrency: 1), resource-sensitive Stryker suite — queue it
+# instead of cancelling the run already in progress (issue #211's fix for
+# ci.yml, applied here).
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   mutation-test:
     runs-on: ubuntu-latest
+    # Generous bound while real run durations are collected (recent scheduled
+    # runs have failed before reaching Stryker, so no baseline exists yet);
+    # tighten once a few full runs land. Caps a wedged run instead of tying
+    # up a scheduled runner slot indefinitely.
+    timeout-minutes: 90
 
     services:
       postgres:
