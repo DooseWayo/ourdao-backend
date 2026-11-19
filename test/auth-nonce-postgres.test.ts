@@ -211,12 +211,12 @@ describe('PostgresNonceStore', () => {
   it('rejects issuance when the unexpired store reaches its configured capacity', async () => {
     const address = 'GBJCHUKZMTFSLOMNC7P4TS4VJJBTCYL3AESFVNUN3AHYJRULJLW7AUWQ'
     const originalMaxEntries = config.db.nonceMaxEntries
-    config.db.nonceMaxEntries = 1
+    Object.assign(config.db, { nonceMaxEntries: 1 })
     try {
       await store.issue(address)
       await expect(store.issue(address)).rejects.toBeInstanceOf(NonceStoreCapacityError)
     } finally {
-      config.db.nonceMaxEntries = originalMaxEntries
+      Object.assign(config.db, { nonceMaxEntries: originalMaxEntries })
     }
   })
 

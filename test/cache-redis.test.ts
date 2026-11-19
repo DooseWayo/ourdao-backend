@@ -199,7 +199,7 @@ describe('cache/redis', () => {
       const { getOrSetCache } = await import('../src/cache/redis.js')
       // The shared client is created lazily on first use, so warm it up first.
       await getOrSetCache('warm', 30, vi.fn().mockResolvedValue(1))
-      const redis = FakeRedis.instances[0]
+      const redis = FakeRedis.instances[0]!
 
       // First outage: fallback to fetcher, logged once.
       FakeRedis.shouldFailConnection = true

@@ -82,7 +82,7 @@ describe('API: error-response CORS respects CORS_ORIGIN (issue #376)', () => {
   let app: FastifyInstance
 
   async function startWith(corsOrigin: string): Promise<void> {
-    config.http.corsOrigin = corsOrigin
+    Object.assign(config.http, { corsOrigin })
     app = await buildServer()
     await app.ready()
   }
@@ -92,7 +92,7 @@ describe('API: error-response CORS respects CORS_ORIGIN (issue #376)', () => {
   })
 
   afterEach(async () => {
-    config.http.corsOrigin = originalOrigin
+    Object.assign(config.http, { corsOrigin: originalOrigin })
     await app.close()
   })
 

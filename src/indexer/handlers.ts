@@ -719,7 +719,7 @@ const handlers: Record<string, Handler> = {
 // Map event symbols to the stream channel a fold of that symbol touches
 // (issue #63). Read by `applyEvent` below to decide which channel to report
 // as changed — it no longer sends the NOTIFY itself (issue #169).
-export const channelMap: Record<string, StreamChannel> = {
+export const channelMap: Record<string, StreamChannel | StreamChannel[]> = {
   joined: STREAM_CHANNELS.members,
   exited: STREAM_CHANNELS.members,
   staked: STREAM_CHANNELS.members,
@@ -746,8 +746,6 @@ export const channelMap: Record<string, StreamChannel> = {
   tre_exec: STREAM_CHANNELS.treasury_proposals,
   tre_wait: STREAM_CHANNELS.treasury_proposals,
   tre_rej: STREAM_CHANNELS.treasury_proposals,
-  tre_exec: STREAM_CHANNELS.treasury_proposals,
-  revealed: STREAM_CHANNELS.treasury_proposals,
 
   interest: STREAM_CHANNELS.interest,
 }
