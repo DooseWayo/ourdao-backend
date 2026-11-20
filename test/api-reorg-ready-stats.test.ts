@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../src/api/server.js'
 import { query } from '../src/db/index.js'
+import { config } from '../src/config.js'
 import { closeDb, resetDb } from './db.js'
 
 // Issue #191: a recorded ledger discontinuity is visible over the API —
@@ -103,5 +104,25 @@ describe('reorg halt surfaced on /ready and /api/stats (issue #191)', () => {
     res = await app.inject({ method: 'GET', url: '/api/stats' })
     expect(res.json().reorgDetected).toBe(false)
     expect(res.json().reorgHalt).toBeNull()
+  })
+
+  it('issue #491: /ready and /api/stats scale estimatedLagSeconds by STELLAR_LEDGER_CLOSE_TIME_SECONDS', async () => {
+    const stellar = config.stellar as { ledgerCloseTimeSeconds: number }
+    const original = stellar.ledgerCloseTimeSeconds
+    stellar.ledgerCloseTimeSeconds = 10
+    try {
+      await query(`INSERT INTO indexer_cursor (contract_id, last_ledger, observed_tip_ledger, updated_at) VALUES ('CTEST', 500, 600, now())`)
+
+      const ready = await app.inject({ method: 'GET', url: '/ready' })
+      expect(ready.statusCode).toBe(200)
+      expect(ready.json().ledgersBehind).toBe(100)
+      expect(ready.json().estimatedLagSeconds).toBe(1000)
+
+      const stats = await app.inject({ method: 'GET', url: '/api/stats' })
+      expect(stats.statusCode).toBe(200)
+      expect(stats.json().estimatedLagSeconds).toBe(1000)
+    } finally {
+      stellar.ledgerCloseTimeSeconds = original
+    }
   })
 })
