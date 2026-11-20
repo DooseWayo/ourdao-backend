@@ -1,5 +1,4 @@
 import type { Client } from 'pg'
-import { cleanupExpiredFailedEvents } from '../indexer/poller.js'
 
 // Issue #279: periodic VACUUM ANALYZE + expired-nonce cleanup, run from
 // src/worker.ts alongside the indexer loop.
@@ -79,7 +78,7 @@ export async function runMaintenance(client: Client): Promise<MaintenanceResult>
 
   let expiredFailedEventsError: string | undefined
   try {
-    await cleanupExpiredFailedEvents()
+    await client.query('SELECT delete_expired_failed_events()')
   } catch (err) {
     expiredFailedEventsError = (err as Error).message
   }

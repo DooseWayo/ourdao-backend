@@ -21,9 +21,6 @@ import { closeRedis } from '../cache/redis.js'
 import { metricsRegistry } from './metrics.js'
 import { server as rpcServer } from '../stellar/rpc.js'
 import type { ReorgHalt } from '../indexer/poller.js'
-// Stellar's nominal ledger close time, used to convert a lag in ledgers into
-// an estimated lag in seconds for the /ready readiness probe.
-const STELLAR_LEDGER_CLOSE_TIME_SECONDS = 5
 
 interface CursorRow {
   last_ledger: number | null
@@ -614,7 +611,7 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
     const ledgersBehind = lastLedger != null && tipLedger != null && tipLedger > lastLedger
       ? tipLedger - lastLedger
       : null
-    const estimatedLagSeconds = ledgersBehind != null ? ledgersBehind * STELLAR_LEDGER_CLOSE_TIME_SECONDS : null
+    const estimatedLagSeconds = ledgersBehind != null ? ledgersBehind * config.stellar.ledgerCloseTimeSeconds : null
 
     if (isStale) {
       return reply.code(503).send({

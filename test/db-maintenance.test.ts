@@ -88,4 +88,17 @@ describe('db/maintenance: runMaintenance', () => {
     expect(deleted).toBe(true)
     expect(result.expiredFailedEventsError).toBeUndefined()
   })
+
+  it('issue #493: records the expired failed_events cleanup failing without throwing', async () => {
+    const client = fakeClient(async (sql) => {
+      if (sql === 'SELECT delete_expired_failed_events()') throw new Error('function does not exist')
+      return { rowCount: 0 }
+    })
+
+    const result = await runMaintenance(client)
+
+    expect(result.expiredFailedEventsError).toContain('function does not exist')
+    expect(result.expiredNoncesError).toBeUndefined()
+    expect(result.tables.every((t) => t.ok)).toBe(true)
+  })
 })
