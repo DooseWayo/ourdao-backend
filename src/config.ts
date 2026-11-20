@@ -47,6 +47,22 @@ export function nonceStore(env: NodeJS.ProcessEnv, name: string, fallback: 'post
 }
 
 /**
+ * Parse the CONTRACT_IDS env var into an array of contract id strings.
+ * Accepts a comma-separated list, trims whitespace, drops empty entries, and
+ * de-duplicates. Returns an empty array when the value is unset or blank.
+ *
+ * Issue #375: multi-contract tailing reports all configured ids on /health
+ * and verifies every id has a cursor row on /ready.
+ *
+ * Exported so tests can exercise it without import-time side effects.
+ */
+export function parseContractIds(raw: string | undefined): string[] {
+  const trimmed = (raw ?? '').trim()
+  if (trimmed === '') return []
+  return [...new Set(trimmed.split(',').map((id) => id.trim()).filter(Boolean))]
+}
+
+/**
  * Parse the CORS_ORIGIN env var into a Fastify-compatible origin value.
  *
  * - `"*"` → `"*"` (opt-in to wide-open CORS, triggers a warning)
@@ -211,11 +227,9 @@ export function resolveConfig(env: NodeJS.ProcessEnv) {
     // is a comma-separated list and takes priority when set; CONTRACT_ID alone
     // still works unchanged for existing single-contract deployments. Blank
     // entries from stray commas/whitespace are dropped rather than producing
-    // an empty-string "contract" the RPC would reject.
-    contractIds: str(env, 'CONTRACT_IDS')
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0),
+    // an empty-string "contract" the RPC would reject. Issue #375: extracted
+    // into parseContractIds() so it can be unit-tested independently.
+    contractIds: parseContractIds(env.CONTRACT_IDS),
     rpcUrl: str(env, 'SOROBAN_RPC_URL', 'https://soroban-testnet.stellar.org'),
     // Issue #284: custom headers (API key, bearer token) for managed/private
     // Soroban RPC providers. Never log this value — see parseStellarRpcHeaders.
