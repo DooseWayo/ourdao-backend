@@ -811,6 +811,15 @@
               "type": "string"
             },
             "in": "query",
+            "name": "contract",
+            "required": false,
+            "description": "Only failures from this contract deployment."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
             "name": "from_ledger",
             "required": false,
             "description": "Only failures from this ledger onwards (issue #192)."
@@ -848,6 +857,10 @@
                       },
                       "event_id": {
                         "type": "string"
+                      },
+                      "contract_id": {
+                        "type": "string",
+                        "nullable": true
                       },
                       "symbol": {
                         "type": "string"
@@ -1001,17 +1014,85 @@
                     "quarantinedEvents": {
                       "type": "integer"
                     },
+                    "quarantineEscalatedAt": {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    "lastIndexedLedger": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "observedTipLedger": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "ledgersBehind": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "estimatedLagSeconds": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "secondsSinceUpdate": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "indexerStale": {
+                      "type": "boolean"
+                    },
                     "connectedStreams": {
                       "type": "integer"
                     },
                     "notificationFailures": {
                       "type": "integer"
                     },
+                    "reorgDetected": {
+                      "type": "boolean"
+                    },
+                    "contracts": {
+                      "type": "object",
+                      "description": "Per-contract indexer health, present only with multiple CONTRACT_IDS.",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "lastIndexedLedger": {
+                            "type": "integer",
+                            "nullable": true
+                          },
+                          "observedTipLedger": {
+                            "type": "integer",
+                            "nullable": true
+                          },
+                          "ledgersBehind": {
+                            "type": "integer",
+                            "nullable": true
+                          },
+                          "quarantinedEvents": {
+                            "type": "integer"
+                          },
+                          "quarantineEscalatedAt": {
+                            "type": "string",
+                            "nullable": true
+                          },
+                          "reorgDetected": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
                     "reorgHalt": {
                       "type": "object",
                       "properties": {
-                        "reason": {
+                        "detectedAt": {
                           "type": "string"
+                        },
+                        "contractId": {
+                          "type": "string"
+                        },
+                        "lastLedger": {
+                          "type": "integer",
+                          "nullable": true
                         },
                         "detail": {
                           "type": "string"

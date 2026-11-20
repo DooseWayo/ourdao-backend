@@ -224,7 +224,7 @@ Base path: `/api`.
 | `GET /health` | Liveness check + the currently configured contract id. No DB round trip. |
 | `GET /ready` | Readiness probe — checks Postgres reachability and indexer freshness. Returns `503` with a `reason` when Postgres is down or the indexer cursor is stale. |
 | `GET /metrics` | Prometheus metrics: SSE connection count/message throughput plus default Node.js process metrics. |
-| `GET /api/stats` | Aggregate counts (members, loans, proposals) + defaulted-loan count/value + lifetime money figures (`interestCollected`, `principalLent`, `principalRepaid`, `valueDefaulted`, all decimal strings) + `quarantinedEvents` (issue #43) + `lastIndexedLedger` (highest ledger actually folded) and `observedTipLedger` (RPC-observed chain tip, issue #45) as the useful "folded to X, chain is at Y" pair + `connectedStreams` (live SSE connection count on this process, issue #156) + `notificationFailures` (count of failed stream NOTIFYs since process start, issue #169). Cached in-process for `STATS_CACHE_MS` (except `connectedStreams`/`notificationFailures`, which are always live); sets `Cache-Control`. With more than one API instance the cached figures may briefly disagree. |
+| `GET /api/stats` | Aggregate counts (members, loans, proposals) + defaulted-loan count/value + lifetime money figures (`interestCollected`, `principalLent`, `principalRepaid`, `valueDefaulted`, all decimal strings) + `quarantinedEvents` (issue #43) + `lastIndexedLedger` (highest ledger actually folded) and `observedTipLedger` (RPC-observed chain tip, issue #45) as the useful "folded to X, chain is at Y" pair + `connectedStreams` (live SSE connection count on this process, issue #156) + `notificationFailures` (count of failed stream NOTIFYs since process start, issue #169). With multiple `CONTRACT_IDS`, `contracts` adds an entry per configured contract containing `lastIndexedLedger`, `observedTipLedger`, `ledgersBehind`, `quarantinedEvents`, `quarantineEscalatedAt`, and `reorgDetected`; the top-level figures retain their existing aggregate behavior. Cached in-process for `STATS_CACHE_MS` (except `connectedStreams`/`notificationFailures`, which are always live); sets `Cache-Control`. With more than one API instance the cached figures may briefly disagree. |
 | `GET /api/interest` | Interest-distribution history — one row per `interest` event (`amount` collected, `active_members` at that distribution). `?before=<ledger>` cursor. |
 | `GET /api/members` | Active members. |
 | `GET /api/members/:address` | Single member. |
@@ -242,7 +242,7 @@ Base path: `/api`.
 | `GET /api/events` | Raw event feed. Optional `?symbol=`, `?before=<id|ledger>`, `?after=<id|ledger>`, `?order=asc|desc`. |
 | `GET /api/admin/log` | Admin/governance audit trail — init, admin add/remove, threshold changes, policy changes, pause/unpause. |
 | `GET /api/documents?kind=&proposal_id=` | A proposal's attached-document history (issue #44) — existence/history only, never the content hash (still read live from the contract via `get_document`). `kind` (`loan` or `treasury`) and `proposal_id` are both required, since loan and treasury proposal ids are drawn from independent sequences and collide. `?before=<ledger>` cursor. |
-| `GET /api/admin/failed-events` | Quarantined events (issue #43) — the operator-facing detail behind `/api/stats.quarantinedEvents`. Each row has the event id, symbol, ledger, the error that quarantined it, and `resolved_at` (issue #168, null while still outstanding); the raw `events` row itself is left untouched. `?unresolved=true` narrows the list to `resolved_at IS NULL`. |
+| `GET /api/admin/failed-events` | Quarantined events (issue #43) — the operator-facing detail behind `/api/stats.quarantinedEvents`. Each row has the event id, `contract_id`, symbol, ledger, and `resolved_at` (issue #168, null while still outstanding); raw error text stays in Postgres and the raw `events` row is untouched. `?unresolved=true` narrows the list to `resolved_at IS NULL`; `?contract=` scopes rows and `X-Total-Count` to one deployment. |
 | `GET /api/stream` | Server-Sent Events stream of real-time change notifications (issue #63). Registered inside the `/api` plugin like every other route (issue #158). Sends lightweight change signals like `members_changed`, `loan_proposals_changed` as the indexer folds events — clients refetch via the endpoints above. Each message includes the channel name and timestamp. Optional `?channels=members,loans` subscribes to only that subset instead of every channel (issue #160) — see [Security notes](#security-notes) for why there is no per-member channel. The stream uses Postgres `LISTEN`/`NOTIFY` under the hood (`pg_notify` with bound parameters, issue #153): every API instance keeps exactly **one** shared listener connection for the whole process and fans notifications out to its own connected clients in-process (issue #152), rather than each client holding a dedicated connection — multiple instances still fan out independently without coordination. The server enforces backpressure (issue #157), concurrent connection caps with `503` + `Retry-After` (issue #156), and a socket idle timeout. The initial handshake stays under the global request rate limiter; open connections are bounded by `STREAM_MAX_*` rather than the request limiter (see Security notes). See [Reconnecting and missed changes](#reconnecting-and-missed-changes) for the `id`/`Last-Event-ID` guarantee. |
 
 - `GET /health` — Liveness check + currently configured contract id (no DB round trip)
@@ -286,7 +286,7 @@ Base path: `/api`.
 **Admin:**
 
 - `GET /api/admin/log` — Admin/governance audit trail
-- `GET /api/admin/failed-events` — Quarantined events, newest first: `?before=<id>` cursor, `?unresolved=true`, `?symbol=`, `?from_ledger=`/`?to_ledger=` (inclusive, at most 10000 ledgers apart), `?limit=`; `X-Total-Count` carries the size of the filtered set so the scale is visible without paging
+- `GET /api/admin/failed-events` — Quarantined events, newest first: `?before=<id>` cursor, `?unresolved=true`, `?symbol=`, `?contract=`, `?from_ledger=`/`?to_ledger=` (inclusive, at most 10000 ledgers apart), `?limit=`; `X-Total-Count` carries the size of the filtered set so the scale is visible without paging
 
 **Real-time:**
 
@@ -448,7 +448,7 @@ npm run lint
 npm run typecheck
 ```
 
-766 tests across 103 files, covering:
+783 tests across 107 files, covering:
 
 - Event decode logic (`decodeEvent`, `toJsonSafe`) in isolation.
 - Every indexer handler (membership, loan lifecycle including defaults, treasury, staking, registry, commit-reveal privacy, document attachments) against a real Postgres instance — not mocked.

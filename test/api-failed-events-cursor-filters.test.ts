@@ -64,6 +64,33 @@ describe('GET /api/admin/failed-events paging and filters (issue #192)', () => {
     expect(res.headers['x-total-count']).toBe('3')
   })
 
+  it('scopes rows and the total count to one contract alongside other filters', async () => {
+    await query(`INSERT INTO failed_events (event_id, contract_id, symbol, ledger, error)
+      VALUES ('a-1', 'CA', 'joined', 100, 'boom'),
+             ('a-2', 'CA', 'joined', 200, 'boom'),
+             ('b-1', 'CB', 'joined', 150, 'boom'),
+             ('b-2', 'CB', 'exited', 250, 'boom')`)
+    const first = await app.inject({
+      method: 'GET',
+      url: '/api/admin/failed-events?contract=CA&symbol=joined&limit=1',
+    })
+    expect(first.statusCode).toBe(200)
+    expect(first.headers['x-total-count']).toBe('2')
+    const firstRows = first.json() as Array<{ id: number; contract_id: string }>
+    expect(firstRows).toHaveLength(1)
+    expect(firstRows[0]?.contract_id).toBe('CA')
+
+    const second = await app.inject({
+      method: 'GET',
+      url: `/api/admin/failed-events?contract=CA&symbol=joined&before=${firstRows[0]!.id}&limit=1`,
+    })
+    expect((second.json() as Array<{ event_id: string }>).map((r) => r.event_id)).toEqual(['a-1'])
+    expect(second.headers['x-total-count']).toBe('2')
+    const other = await app.inject({ method: 'GET', url: '/api/admin/failed-events?contract=CB' })
+    expect((other.json() as Array<{ event_id: string }>).map((r) => r.event_id)).toEqual(['b-2', 'b-1'])
+    expect(other.headers['x-total-count']).toBe('2')
+  })
+
   it('filters by an inclusive ledger range using the shared validation helpers', async () => {
     await seedFailures(10, { ledger: (i) => 100 * i })
     const res = await app.inject({ method: 'GET', url: '/api/admin/failed-events?from_ledger=300&to_ledger=500' })
@@ -128,7 +155,7 @@ describe('GET /api/admin/failed-events paging and filters (issue #192)', () => {
     await seedFailures(1)
     const res = await app.inject({ method: 'GET', url: '/api/admin/failed-events?symbol=loan_dflt' })
     expect(Object.keys(res.json()[0]).sort()).toEqual(
-      ['created_at', 'event_id', 'id', 'ledger', 'resolved_at', 'symbol'].sort()
+      ['contract_id', 'created_at', 'event_id', 'id', 'ledger', 'resolved_at', 'symbol'].sort()
     )
     expect(res.payload).not.toContain('boom')
     expect(res.headers['cache-control']).toBe('no-store')

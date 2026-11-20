@@ -255,6 +255,7 @@ CREATE INDEX IF NOT EXISTS interest_distributions_ledger_idx ON interest_distrib
 CREATE TABLE IF NOT EXISTS failed_events (
   id          BIGSERIAL PRIMARY KEY,
   event_id    TEXT NOT NULL,
+  contract_id TEXT,
   symbol      TEXT NOT NULL,
   ledger      BIGINT NOT NULL,
   error       TEXT NOT NULL,
@@ -269,11 +270,13 @@ CREATE TABLE IF NOT EXISTS failed_events (
 -- CREATE above no-ops; add the columns the same idempotent way the migration does.
 ALTER TABLE failed_events ADD COLUMN IF NOT EXISTS resolution TEXT;
 ALTER TABLE failed_events ADD COLUMN IF NOT EXISTS resolution_note TEXT;
+ALTER TABLE failed_events ADD COLUMN IF NOT EXISTS contract_id TEXT;
 DO $$ BEGIN
   ALTER TABLE failed_events ADD CONSTRAINT failed_events_resolution_check
     CHECK (resolution IS NULL OR resolution IN ('resolved', 'ignored'));
 EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL;
 END $$;
+CREATE INDEX IF NOT EXISTS failed_events_contract_id_idx ON failed_events (contract_id);
 -- One row per distinct failing event (migration 0022, issue #171).
 DO $$ BEGIN
   ALTER TABLE failed_events ADD CONSTRAINT failed_events_event_id_unique UNIQUE (event_id);
