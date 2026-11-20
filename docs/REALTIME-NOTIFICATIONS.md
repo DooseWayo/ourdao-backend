@@ -201,4 +201,4 @@ Clients refetch instead, using the same code path regardless of whether they lea
 - `src/api/stream.ts` — Implementation
 - `src/indexer/handlers.ts` — Where `notifyStreamClientsAfterCommit()` is called
 - `README.md` "API reference" — `/api/stream` endpoint documentation
-- `docs/DEPLOYMENT.md` — Deployment configuration (PgBouncer warning to be added)
+- `docs/DEPLOYMENT.md` "PgBouncer and LISTEN/NOTIFY incompatibility" — why the shared listener needs a direct (non-transaction-pooled) Postgres connection

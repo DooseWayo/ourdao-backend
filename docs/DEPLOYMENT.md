@@ -2,7 +2,7 @@
 
 This document covers everything needed to run `ourdao-backend` outside a laptop: the two-process topology, first-deploy decisions, configuration, backup, redeploy, and day-to-day operations. It deliberately omits platform-specific manifests — the requirements below map to any container scheduler or VM.
 
-> **Living document.** Several open issues in this repo change deployment-relevant behaviour: leader election for the worker (#TBD), Docker/readiness improvements, and migration tooling. This document will be updated as those land. Where a known gap exists it is called out inline.
+> **Living document.** Several open issues in this repo change deployment-relevant behaviour: Docker/readiness improvements and migration tooling. This document will be updated as those land. Worker leader election has already landed (#584); see [The worker must be a singleton](#the-worker-must-be-a-singleton). Where a known gap exists it is called out inline.
 
 ## Table of contents
 
