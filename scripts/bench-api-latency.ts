@@ -32,26 +32,74 @@ interface BenchmarkResult {
   mean: number
 }
 
-async function seedDatabase() {
-  console.log('[bench] Seeding database with realistic data...')
-  
-  // Check if database already has data
-  const rows = await query<{ count: string }>('SELECT COUNT(*) as count FROM events')
-  const eventCount = parseInt(rows[0]?.count || '0', 10)
-  
-  if (eventCount > 0) {
-    console.log(`[bench] Database already contains ${eventCount} events - skipping seed`)
-    return
-  }
-  
-  // TODO: Seed with realistic data:
-  // - 100+ members
-  // - 50+ loan proposals
-  // - 30+ active loans
-  // - Treasury proposals
-  // - Interest distributions
-  console.warn('[bench] Database seeding not yet implemented - running against current data')
-  console.warn('[bench] For accurate results, seed database with realistic scale first')
+// Scale docs/API-LATENCY-BASELINE.md describes: 100+ members, 50+ loan
+// proposals, 30+ loans, plus treasury proposals and interest distributions.
+export const SEED_SCALE = {
+  members: 120,
+  loanProposals: 60,
+  loans: 40,
+  treasuryProposals: 20,
+  interestDistributions: 30,
+} as const
+
+// Synthetic, StrKey-shaped (G + 55 base32 chars) member address for row `i`.
+const SEED_ADDRESS_SQL = `'GBENCH' || translate(lpad(i::text, 50, '0'), '0123456789', 'ABCDEFGHIJ')`
+
+/**
+ * Creates or tops up the derived tables the benchmarked endpoints read to
+ * SEED_SCALE. Idempotent: rows are keyed on fixed ids/addresses and inserted
+ * with ON CONFLICT DO NOTHING, so a rerun (or a database that already has
+ * real data) only fills in what is missing. TEST_ADDRESS is seeded as a
+ * member so the summary benchmark measures a real 200, not a 404.
+ */
+export async function seedDatabase(): Promise<void> {
+  console.log('[bench] Seeding database to realistic scale (top-up, idempotent)...')
+
+  await query(
+    `INSERT INTO members (address, joined_ledger, contribution, stake)
+     VALUES ($1, 1, 1000000000, 500000000)
+     ON CONFLICT (address) DO NOTHING`,
+    [TEST_ADDRESS]
+  )
+  await query(
+    `INSERT INTO members (address, joined_ledger, contribution, stake, has_active_loan)
+     SELECT ${SEED_ADDRESS_SQL}, i, 1000000000 + i * 1000, 500000000, i <= $2
+       FROM generate_series(1, $1::int) AS i
+     ON CONFLICT (address) DO NOTHING`,
+    [SEED_SCALE.members, SEED_SCALE.loans]
+  )
+  await query(
+    `INSERT INTO loan_proposals (id, borrower, amount, total_repayment, status, votes_for, votes_against, voter_count, created_ledger)
+     SELECT 900000 + i, ${SEED_ADDRESS_SQL}, 10000000 * i, 11000000 * i,
+            (ARRAY['pending', 'approved', 'rejected', 'cancelled'])[1 + i % 4], i * 3, i, 4, 1000 + i
+       FROM generate_series(1, $1::int) AS i
+     ON CONFLICT (id) DO NOTHING`,
+    [SEED_SCALE.loanProposals]
+  )
+  await query(
+    `INSERT INTO loans (id, borrower, amount, outstanding, total_repayment, status, approved_ledger, due_time)
+     SELECT 900000 + i, ${SEED_ADDRESS_SQL}, 10000000 * i,
+            CASE WHEN i % 5 = 0 THEN 0 ELSE 11000000 * i END, 11000000 * i,
+            CASE WHEN i % 5 = 0 THEN 'repaid' ELSE 'active' END, 2000 + i, now() + i * interval '1 day'
+       FROM generate_series(1, $1::int) AS i
+     ON CONFLICT (id) DO NOTHING`,
+    [SEED_SCALE.loans]
+  )
+  await query(
+    `INSERT INTO treasury_proposals (id, amount, destination, status, votes_for, votes_against, voter_count, created_ledger)
+     SELECT 900000 + i, 5000000 * i, ${SEED_ADDRESS_SQL},
+            (ARRAY['pending', 'executed', 'rejected'])[1 + i % 3], i * 2, i, 3, 3000 + i
+       FROM generate_series(1, $1::int) AS i
+     ON CONFLICT (id) DO NOTHING`,
+    [SEED_SCALE.treasuryProposals]
+  )
+  await query(
+    `INSERT INTO interest_distributions (event_id, ledger, amount, active_members)
+     SELECT 'bench-interest-' || i, 4000 + i, 100000 * i, $2::int
+       FROM generate_series(1, $1::int) AS i
+     ON CONFLICT (event_id) DO NOTHING`,
+    [SEED_SCALE.interestDistributions, SEED_SCALE.members]
+  )
 }
 
 async function benchmarkEndpoint(
@@ -179,7 +227,11 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('[bench] fatal:', err)
-  process.exit(1)
-})
+// Guarded so importing seedDatabase (as test/bench-api-latency-seed.test.ts
+// does) never starts the benchmark.
+if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error('[bench] fatal:', err)
+    process.exit(1)
+  })
+}
