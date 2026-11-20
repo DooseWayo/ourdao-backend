@@ -231,10 +231,12 @@ Base path: `/api`.
 | `GET /api/members/:address/summary` | Member's dashboard data, including the member row, up to 100 loans, unread notification count, and their relative position to DAO totals (share percentages in basis points) in a single consistent snapshot. |
 | `GET /api/members/:address/activity` | Every event that names this address as a participant (joins, stakes, loan actions, votes), newest first (issue #26). `?before=<ledger>` cursor. Each entry is the decoded event: `id`, `symbol`, `ledger`, `timestamp`, `tx_hash`, and named `fields`. |
 | `GET /api/proposals/loan` | Loan proposals with vote tallies (`votes_for`/`votes_against`), a distinct `voter_count`, and an explicit `tallies_weighted: false` flag. |
+| `GET /api/proposals/loan/:id` | Single loan proposal, with the same tallies and `tallies_weighted: false` flag as the list. A nonexistent id returns `404` (unlike the timeline routes); a non-numeric id is a `400`. |
 | `GET /api/loans` | Loans. Optional `?borrower=`, `?before=<id>` for pagination. `status` is `active`, `repaid`, or `defaulted` — a loan is marked defaulted once it's past due plus the policy's grace period (permissionless on-chain, see `ourdao-contracts`). Each loan includes derived `interest_charge` and `repaid_amount` fields. |
 | `GET /api/loans/:id` | Single loan, with the same derived `interest_charge`/`repaid_amount` fields. |
 | `GET /api/loans/:id/timeline` | A loan's full lifecycle in chronological order (issue #26): `loan_req`, `loan_edit`, `loan_vote`, `loan_wait`, `loan_rej`, `loan_appr`, `loan_rpy`, `loan_dflt`, `loan_exp`. Returns `{ "timeline": [...], "truncated": false, "total": 6 }` where each timeline entry is the decoded event — `id`, `symbol`, `ledger`, `timestamp`, `tx_hash`, and named `fields` (not raw JSONB) — `total` is every matching event regardless of the cap, and `truncated` is `true` once a lifecycle exceeds `TIMELINE_MAX_ROWS` (2000) rows, so a client can tell "capped" apart from "complete" (issue #586). A nonexistent id returns an empty timeline (`200`), not a `404`. |
 | `GET /api/proposals/treasury` | Treasury proposals with vote tallies, a distinct `voter_count`, and an explicit `tallies_weighted: false` flag. |
+| `GET /api/proposals/treasury/:id` | Single treasury proposal, same shape as a list row. A nonexistent id returns `404` (unlike the timeline routes); a non-numeric id is a `400`. |
 | `GET /api/proposals/treasury/:id/timeline` | A treasury proposal's full lifecycle in chronological order (issue #26): `tre_prop`, `tre_vote`, `committed`, `revealed`, `tre_wait`, `tre_rej`, `tre_exec`. Same shape (including `truncated`/`total`, issue #586) and empty-not-404 behaviour as the loan timeline. |
 | `GET /api/notifications?address=` | Notifications for an address. |
 | `PATCH /api/notifications/:id/read` | Mark one notification read. |
@@ -262,6 +264,7 @@ Base path: `/api`.
 **Loans:**
 
 - `GET /api/proposals/loan` — Loan proposals with vote tallies
+- `GET /api/proposals/loan/:id` — Single loan proposal (`404` for a nonexistent id)
 - `GET /api/loans` — Loans list (optional `?borrower=` filter)
 - `GET /api/loans/:id` — Single loan
 - `GET /api/loans/:id/timeline` — Loan's full lifecycle events
@@ -269,6 +272,7 @@ Base path: `/api`.
 **Treasury:**
 
 - `GET /api/proposals/treasury` — Treasury proposals with vote tallies
+- `GET /api/proposals/treasury/:id` — Single treasury proposal (`404` for a nonexistent id)
 - `GET /api/proposals/treasury/:id/timeline` — Treasury proposal's full lifecycle events
 
 **Notifications:**
@@ -302,7 +306,7 @@ For detailed request/response schemas, query parameters, and authentication requ
 
 ### Common patterns
 
-All list endpoints accept `?limit=` (default 50, max 200). `?before=` and `?after=` are cursors: pass the `id` (or `ledger`) of the last row you saw to page. For `/api/events`, the cursor can be a deterministic `(ledger, id)` value and ordering is strictly deterministic (`ledger DESC, id DESC` by default, or `ASC`).
+All list endpoints accept `?limit=` (default 50, max 200); single-lookup routes (`/:id`, `/:address`) don't. `?before=` and `?after=` are cursors: pass the `id` (or `ledger`) of the last row you saw to page. For `/api/events`, the cursor can be a deterministic `(ledger, id)` value and ordering is strictly deterministic (`ledger DESC, id DESC` by default, or `ASC`).
 
 On-chain `i128` amounts are returned as decimal **strings** to preserve precision (see [Database schema](#database-schema)); ledger sequence numbers are returned as regular JSON numbers.
 
@@ -448,7 +452,7 @@ npm run lint
 npm run typecheck
 ```
 
-766 tests across 103 files, covering:
+773 tests across 105 files, covering:
 
 - Event decode logic (`decodeEvent`, `toJsonSafe`) in isolation.
 - Every indexer handler (membership, loan lifecycle including defaults, treasury, staking, registry, commit-reveal privacy, document attachments) against a real Postgres instance — not mocked.

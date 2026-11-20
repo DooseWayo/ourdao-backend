@@ -24,9 +24,9 @@ The benchmark (`npm run bench:api` / `scripts/bench-api-latency.ts`) measures re
 
 ## Baseline Results
 
-**TODO**: Run `npm run bench:api` against a realistically-seeded database and record results here.
+**Not yet measured.** Seeding is implemented (see below), so `npm run bench:api` now runs at the documented scale; its printed table should replace the estimates here, together with the machine, Postgres version and Node version it was measured on.
 
-Expected baseline (estimated from query structure):
+Expected baseline (estimated from query structure, **not measured**):
 
 | Endpoint | p50 (ms) | p95 (ms) | Notes |
 |----------|----------|----------|-------|
@@ -35,7 +35,7 @@ Expected baseline (estimated from query structure):
 | GET /api/proposals/loan | 5-15 | 20-30 | Indexed on `id DESC` |
 | GET /api/members/:address/summary | 10-25 | 30-50 | Multi-table aggregation; loans limited to 100 |
 
-These are **cold query estimates**. Actual results will be added once database seeding is implemented and the benchmark is run.
+These are **cold query estimates**. Actual results will be added once the benchmark is run against a seeded local Postgres.
 
 ## Interpreting Results
 
@@ -64,7 +64,7 @@ These are **cold query estimates**. Actual results will be added once database s
 npm run bench:api
 ```
 
-The script seeds the database if empty (once implemented), then benchmarks all endpoints and prints results.
+The script first tops up the database to the documented scale (120 members, 60 loan proposals, 40 loans, 20 treasury proposals, 30 interest distributions). Seeding is idempotent: it uses fixed ids and addresses with `ON CONFLICT DO NOTHING`, so existing rows are kept and a rerun adds nothing. It then benchmarks all endpoints and prints results. The seeded member `GAAAA…AWHF` is the one the summary benchmark queries.
 
 ### In CI
 
@@ -110,7 +110,7 @@ Multiply the baseline p50 by ~1.5-2x to estimate production p50. Use the baselin
 
 ## Next Steps
 
-1. **Implement database seeding** in `scripts/bench-api-latency.ts` (marked TODO)
+1. ~~**Implement database seeding** in `scripts/bench-api-latency.ts`~~ (done, issue #471)
 2. **Run the benchmark** and record actual results here
 3. **Add to CI** as a scheduled or on-demand job
 4. **Re-run after indexing changes** to validate improvements

@@ -58,6 +58,8 @@ npm run build
 TEST_DATABASE_URL=postgres://ourdao:ourdao@localhost:5432/ourdao_test npm test
 ```
 
+Each parallel test worker uses its own `test_worker_N` schema and drops it on a clean exit. If a run is killed mid-suite (Ctrl-C, a crashed process), those schemas are left behind. Once no test run is in progress, remove them with `npm run clean:test-schemas`, pointed at the same database (`DATABASE_URL=$TEST_DATABASE_URL npm run clean:test-schemas`).
+
 CI provisions a throwaway `ourdao_test` database as a service container and does exactly this.
 
 Two more checks CI runs that aren't in the list above:
