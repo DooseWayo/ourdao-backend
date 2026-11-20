@@ -12,6 +12,8 @@
 
 import { exec } from 'child_process'
 import { promisify } from 'util'
+import { resolve } from 'path'
+import { fileURLToPath } from 'url'
 
 const execAsync = promisify(exec)
 
@@ -46,6 +48,20 @@ interface LicenseInfo {
   email?: string
 }
 
+const SELF_PACKAGE_PREFIX = 'ourdao-backend@'
+
+/** Pure approve/reject decision for one license-checker entry. Returns null
+ *  when the package is allowed, otherwise the violation reason. This
+ *  repository's own package is exempt from the UNLICENSED check only (its
+ *  package.json has no license field; the root LICENSE file covers it). */
+export function classifyLicense(pkg: string, licenses: string | undefined): string | null {
+  const license = licenses || 'UNLICENSED'
+  if (license === 'UNLICENSED' && pkg.startsWith(SELF_PACKAGE_PREFIX)) return null
+  if (DISALLOWED_LICENSES.has(license)) return `Disallowed license: ${license} is not compatible with MIT`
+  if (!APPROVED_LICENSES.has(license)) return `License not on approved list: ${license} requires review`
+  return null
+}
+
 async function main() {
   console.log('[license-check] Validating dependency licenses...\n')
 
@@ -63,34 +79,15 @@ async function main() {
   const summary: Record<string, number> = {}
 
   for (const [pkg, info] of Object.entries(licenses)) {
-    // Exclude this repository itself - it shows as UNLICENSED because package.json
-    // has no license field (LICENSE file covers it at repo root)
-    if (pkg.startsWith('ourdao-backend@')) {
-      continue
-    }
-
     const license = info.licenses || 'UNLICENSED'
-
-    // Count licenses for summary
-    summary[license] = (summary[license] || 0) + 1
-
-    // Check if license is explicitly disallowed
-    if (DISALLOWED_LICENSES.has(license)) {
-      violations.push({
-        pkg,
-        license,
-        reason: `Disallowed license: ${license} is not compatible with MIT`,
-      })
-      continue
+    const reason = classifyLicense(pkg, info.licenses)
+    if (reason) {
+      violations.push({ pkg, license, reason })
     }
 
-    // Check if license is on the approved list
-    if (!APPROVED_LICENSES.has(license)) {
-      violations.push({
-        pkg,
-        license,
-        reason: `License not on approved list: ${license} requires review`,
-      })
+    // Count licenses for summary (this repository itself is not a dependency)
+    if (!pkg.startsWith(SELF_PACKAGE_PREFIX)) {
+      summary[license] = (summary[license] || 0) + 1
     }
   }
 
@@ -123,7 +120,11 @@ async function main() {
   console.log(`Violations: 0`)
 }
 
-main().catch((err) => {
-  console.error('[license-check] Unexpected error:', err)
-  process.exit(1)
-})
+// Guarded so importing classifyLicense (as test/check-licenses.test.ts does)
+// never runs license-checker or calls process.exit.
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('[license-check] Unexpected error:', err)
+    process.exit(1)
+  })
+}

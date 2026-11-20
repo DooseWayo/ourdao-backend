@@ -53,6 +53,14 @@ describe('config: assertContractsConfigured (issue #289)', () => {
     expect(() => assertContractsConfigured(cfg)).toThrow(/more than once.*CONE/)
   })
 
+  it('names every duplicated id and accepts a single id with stray commas (#490)', () => {
+    expect(() => assertContractsConfigured(resolveConfig({ CONTRACT_IDS: 'CAAA,CBBB,CAAA,CBBB,CCCC' }))).toThrow(
+      'CONTRACT_IDS lists the same contract id more than once: CAAA, CBBB'
+    )
+    expect(assertContractsConfigured(resolveConfig({ CONTRACT_IDS: 'CAAA' }))).toEqual(['CAAA'])
+    expect(assertContractsConfigured(resolveConfig({ CONTRACT_IDS: ',CAAA,, ' }))).toEqual(['CAAA'])
+  })
+
   it('throws when neither CONTRACT_IDS nor CONTRACT_ID is set', () => {
     const cfg = resolveConfig({})
     expect(() => assertContractsConfigured(cfg)).toThrow(/CONTRACT_ID is not set/)

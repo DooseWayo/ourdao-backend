@@ -100,6 +100,20 @@ describe('parseStellarRpcHeaders (#284)', () => {
       warn.mockRestore()
     }
   })
+
+  it('keeps a colon inside the value and skips malformed entries among padded ones (#489)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(parseStellarRpcHeaders('Authorization:Bearer abc:def')).toEqual({ Authorization: 'Bearer abc:def' })
+      expect(parseStellarRpcHeaders('  X-API-Key :  k1  ,  : empty-name ,  junk  ,  Authorization  :  Bearer abc:def  ')).toEqual({
+        'X-API-Key': 'k1',
+        Authorization: 'Bearer abc:def',
+      })
+      expect(warn).toHaveBeenCalledTimes(2)
+    } finally {
+      warn.mockRestore()
+    }
+  })
 })
 
 describe('resolveConfig', () => {
