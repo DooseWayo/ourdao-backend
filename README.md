@@ -48,6 +48,7 @@ Soroban RPC ──getEvents──▶ indexer (worker.ts) ──▶ Postgres ─�
 ```
 
 - **`src/indexer`** — a poll loop over the Soroban RPC `getEvents`, resuming from a persisted cursor (`indexer_cursor` table) rather than re-scanning from genesis on every restart. Each raw event is written to an append-only `events` log, then folded into the relevant derived table (`members`, `loan_proposals`, `loans`, `treasury_proposals`, `notifications`) inside a single database transaction, so a crash mid-poll can never leave the derived tables and the raw log inconsistent. After each successful fold, the indexer sends a Postgres NOTIFY to alert connected clients of the change. Poll failures back off exponentially (capped, configurable) instead of hammering the RPC endpoint. The `events` log is never pruned; its growth per unit of DAO activity, the secondary-index costs, and the point at which partitioning becomes worthwhile are documented in [`docs/events-storage.md`](./docs/events-storage.md) (measure with `npm run bench:events`).
+  - **Multi-contract tailing (issue #289).** One worker process can tail several contracts at once via `CONTRACT_IDS`. Each contract gets its own cursor row, quarantine state and poll backoff; a ledger discontinuity on any one contract records a reorg halt tagged with that contract and halts the whole worker. The derived tables (including `dao_totals`), the `events` log and NOTIFY stay global and shared across contracts.
 - **`src/stellar/events.ts`** — the event catalog: the exact topic-symbol → data-tuple mapping the contract publishes, decoded via `scValToNative` and converted to JSON-safe primitives (bigints become strings, since JSON has no native 128-bit integer type).
 - **`src/api`** — a [Fastify](https://fastify.dev) server exposing the read endpoints in the [API reference](#api-reference) below. Includes both request/response REST routes and a Server-Sent Events (SSE) stream at `/api/stream` for real-time notifications.
 - **`src/db`** — the Postgres schema (applied idempotently on boot by both the API and worker processes) and a thin query helper over [`pg`](https://node-postgres.com/).
@@ -100,6 +101,7 @@ All configuration is environment-driven — see [`.env.example`](./.env.example)
 | Variable | Purpose |
 |---|---|
 | `CONTRACT_ID` | Deployed OurDAO contract id. **Required** for the indexer to run. |
+| `CONTRACT_IDS` | Comma-separated contract ids to tail in one indexer process (issue #289). Takes precedence over `CONTRACT_ID` when set; listing the same id twice is rejected at startup. Each contract gets its own `indexer_cursor` row. |
 | `SOROBAN_RPC_URL` | Soroban RPC endpoint (defaults to public testnet). |
 | `NETWORK_PASSPHRASE` | Testnet by default; switch for mainnet. |
 | `STELLAR_LEDGER_CLOSE_TIME_SECONDS` | Nominal Stellar ledger close time in seconds, used by `/ready` to turn `ledgersBehind` into `estimatedLagSeconds` (default 5; not an SLA). |
@@ -144,7 +146,7 @@ To add a schema change: update `schema.sql` to the new desired shape (for fresh 
 | Table | Purpose | Notable columns |
 |---|---|---|
 | `schema_migrations` | Tracks which numbered migrations have been applied | `version`, `name`, `applied_at` |
-| `indexer_cursor` | Single-row resume state for the poll loop | `paging_token`, `last_ledger` (highest ledger actually folded), `observed_tip_ledger` (RPC-observed chain tip — freshness only, kept separate from `last_ledger` since issue #45), `contract_id` (cursor is discarded on a cold start if it belongs to a different contract) |
+| `indexer_cursor` | Resume state for the poll loop, one row per tailed contract (keyed on `contract_id` since migration `0027_multi_contract_cursor.sql`) | `paging_token`, `last_ledger` (highest ledger actually folded), `observed_tip_ledger` (RPC-observed chain tip — freshness only, kept separate from `last_ledger` since issue #45), `contract_id` (cursor is discarded on a cold start if it belongs to a different contract) |
 | `events` | Append-only raw event log — the source everything else is derived from | `symbol`, `topics` (JSONB), `data` (JSONB), `tx_hash` |
 | `members` | Current membership state | `contribution`, `stake`, `has_active_loan`, `pending_claimed`, `name` (from the registry), `defaults_count` |
 | `loan_proposals` | Loan votes in flight | `status` (`pending`/`approved`/`rejected`), `votes_for`, `votes_against`, `voter_count` |
