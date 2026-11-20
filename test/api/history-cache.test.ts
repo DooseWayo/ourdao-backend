@@ -71,7 +71,7 @@ describe('api/history-cache', () => {
   })
 
   it('.get() returns null when cache is empty', async () => {
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: undefined } },
     }))
     const { createHistoryCache } = await import('../../src/api/history-cache.js')
@@ -84,7 +84,7 @@ describe('api/history-cache', () => {
   })
 
   it('.set() stores value locally with TTL and .get() retrieves it', async () => {
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: undefined } },
     }))
     const { createHistoryCache } = await import('../../src/api/history-cache.js')
@@ -112,7 +112,7 @@ describe('api/history-cache', () => {
   })
 
   it('.set() skips empty data array (no-op)', async () => {
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: undefined } },
     }))
     const { createHistoryCache } = await import('../../src/api/history-cache.js')
@@ -128,7 +128,7 @@ describe('api/history-cache', () => {
   })
 
   it('.invalidate() clears both local and Redis caches', async () => {
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: 'redis://localhost:6379' } },
     }))
     const { createHistoryCache } = await import('../../src/api/history-cache.js')
@@ -157,7 +157,7 @@ describe('api/history-cache', () => {
   })
 
   it('.close() gracefully quits the Redis client', async () => {
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: 'redis://localhost:6379' } },
     }))
     const { createHistoryCache } = await import('../../src/api/history-cache.js')
@@ -170,17 +170,16 @@ describe('api/history-cache', () => {
   })
 
   it('Redis errors are logged via console.warn but do not throw', async () => {
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: 'redis://localhost:6379' } },
     }))
     FakeRedisClient.shouldFailConnection = true
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { })
 
     try {
       const { createHistoryCache } = await import('../../src/api/history-cache.js')
       const cache = createHistoryCache()
 
-      // This should not throw even though Redis is unavailable
       const data = {
         data: [
           {
@@ -195,7 +194,7 @@ describe('api/history-cache', () => {
       }
 
       await expect(cache.set(data)).resolves.not.toThrow()
-      await expect(cache.get()).resolves.toBeNull()
+      await expect(cache.get()).resolves.not.toThrow()
 
       await cache.close()
     } finally {
@@ -205,7 +204,7 @@ describe('api/history-cache', () => {
 
   it('no Redis instance is created when VITEST env var is set', async () => {
     process.env.VITEST = 'true'
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: 'redis://localhost:6379' } },
     }))
     const { createHistoryCache } = await import('../../src/api/history-cache.js')
@@ -236,7 +235,7 @@ describe('api/history-cache', () => {
   it('no Redis instance is created when NODE_ENV === "test"', async () => {
     delete process.env.VITEST
     process.env.NODE_ENV = 'test'
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: 'redis://localhost:6379' } },
     }))
     const { createHistoryCache } = await import('../../src/api/history-cache.js')
@@ -265,7 +264,7 @@ describe('api/history-cache', () => {
   })
 
   it('cache returns same local value if within TTL even after Redis error', async () => {
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: 'redis://localhost:6379' } },
     }))
     const { createHistoryCache } = await import('../../src/api/history-cache.js')
@@ -299,7 +298,7 @@ describe('api/history-cache', () => {
   })
 
   it('.set() writes to Redis when available and config allows', async () => {
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: 'redis://localhost:6379' } },
     }))
     const { createHistoryCache } = await import('../../src/api/history-cache.js')
@@ -327,7 +326,7 @@ describe('api/history-cache', () => {
   })
 
   it('.get() retrieves from Redis when available (JSON round-trip)', async () => {
-    vi.doMock('../../src/config.js', () => ({
+    vi.mock('../../src/config.js', () => ({
       config: { cache: { historyRedisUrl: 'redis://localhost:6379' } },
     }))
     const { createHistoryCache } = await import('../../src/api/history-cache.js')

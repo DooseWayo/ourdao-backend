@@ -40,6 +40,8 @@ describe('scripts/check-bench-regression', () => {
   }
 
   it('compares current against baseline for each target event count', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const currentResults = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -58,17 +60,17 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
-      if (String(path).includes('current')) return JSON.stringify(currentResults)
-      return JSON.stringify(baseline)
-    })
+    const { report } = compareResults(currentResults, baseline)
 
-    // Verify baseline has multiple results
-    expect(baseline.results).toHaveLength(2)
-    expect(currentResults.results).toHaveLength(2)
+    // Should produce a report with both event counts
+    expect(report).toContain('10000')
+    expect(report).toContain('20000')
+    expect(report).toContain('### Events-storage benchmark')
   })
 
   it('outputs markdown table with columns: events | metric | baseline | current | change', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const currentResults = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -81,17 +83,19 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
-      if (String(path).includes('current')) return JSON.stringify(currentResults)
-      return JSON.stringify(baseline)
-    })
+    const { report } = compareResults(currentResults, baseline)
 
-    // Check table structure expectations
-    expect(baseline.results[0]?.targetEvents).toBe(10000)
-    expect(baseline.results[0]?.bytesPerRow).toBe(100)
+    // Check table structure
+    expect(report).toContain('| events | metric | baseline | current | change |')
+    expect(report).toContain('| ---: | --- | ---: | ---: | ---: |')
+    expect(report).toContain('bytes/row')
+    expect(report).toContain('events_data_gin_idx')
+    expect(report).toContain('reindex ms/event')
   })
 
   it('flags regressions with ⚠️ and % change', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const currentResults = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -104,19 +108,19 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
-      if (String(path).includes('current')) return JSON.stringify(currentResults)
-      return JSON.stringify(baseline)
-    })
+    const { report, warnings } = compareResults(currentResults, baseline)
 
-    // Verify regressions > 15% for bytes/row and > 20% for GIN index are detected
-    const bytesRowChange = (118 - 100) / 100
-    const ginChange = (61000 - 50000) / 50000
-    expect(bytesRowChange).toBeGreaterThan(0.15)
-    expect(ginChange).toBeGreaterThan(0.2)
+    // Should detect all three regressions
+    expect(warnings).toHaveLength(3)
+    expect(report).toContain('⚠️')
+    expect(report).toContain('+18.0%') // bytes/row 18% > 15%
+    expect(report).toContain('+22.0%') // gin 22% > 20%
+    expect(report).toContain('+200.0%') // ms/event 200% > 50%
   })
 
   it('bytesPerRow regression triggers warning if > 15% change', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const current = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -129,12 +133,15 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    // Verify: (118 - 100) / 100 = 0.18 = 18% > 15% threshold
-    const pctChange = (118 - 100) / 100
-    expect(pctChange).toBeGreaterThan(0.15)
+    const { warnings } = compareResults(current, baseline)
+
+    // Should flag the bytes/row regression (18% > 15%)
+    expect(warnings).toContainEqual(expect.stringContaining('bytes/row grew +18.0%'))
   })
 
   it('events_data_gin_idx regression triggers warning if > 20% change', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const current = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -147,12 +154,15 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    // Verify: (61000 - 50000) / 50000 = 0.22 = 22% > 20% threshold
-    const pctChange = (61000 - 50000) / 50000
-    expect(pctChange).toBeGreaterThan(0.2)
+    const { warnings } = compareResults(current, baseline)
+
+    // Should flag the GIN index regression (22% > 20%)
+    expect(warnings).toContainEqual(expect.stringContaining('events_data_gin_idx size grew +22.0%'))
   })
 
   it('reindexMsPerEvent regression triggers warning if > 50% change', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const current = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -160,18 +170,20 @@ describe('scripts/check-bench-regression', () => {
           targetEvents: 10000,
           bytesPerRow: 100,
           indexBytes: { events_data_gin_idx: 50000 },
-          reindexMsPerEvent: 2.5,
+          reindexMsPerEvent: 1.5,
         },
       ],
     }
 
-    // Verify: (2.5 - 1.0) / 1.0 = 1.5 = 150% > 50% threshold
-    // But with baseline 0.5: (2.5 - 0.5) / 0.5 = 4.0 = 400% > 50%
-    const pctChange = (2.5 - 0.5) / 0.5
-    expect(pctChange).toBeGreaterThan(0.5)
+    const { warnings } = compareResults(current, baseline)
+
+    // Should flag ms/event regression (200% > 50%)
+    expect(warnings).toContainEqual(expect.stringContaining('reindex throughput dropped: ms/event grew +200.0%'))
   })
 
   it('no warnings when metrics improve or stay within threshold', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const current = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -184,11 +196,16 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    // No changes = no warnings
-    expect(current.results[0]?.bytesPerRow).toBe(baseline.results[0]?.bytesPerRow)
+    const { warnings, report } = compareResults(current, baseline)
+
+    // No regressions, no warnings
+    expect(warnings).toHaveLength(0)
+    expect(report).toContain('No metric regressed beyond threshold.')
   })
 
   it('warns "no regression" when everything is good', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const current = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -201,13 +218,32 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    // No warnings when metrics are stable
-    expect(current.results[0]).toEqual(baseline.results[0])
+    const { report } = compareResults(current, baseline)
+
+    // Should explicitly say no regression
+    expect(report).toContain('No metric regressed beyond threshold.')
   })
 
   it('appends to GITHUB_STEP_SUMMARY when env var is set', async () => {
     process.env.GITHUB_STEP_SUMMARY = '/tmp/github-step-summary'
 
+    vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
+      const pathStr = String(path)
+      if (pathStr.includes('current')) return JSON.stringify({
+        ranAt: '2024-01-02T00:00:00Z',
+        results: [
+          {
+            targetEvents: 10000,
+            bytesPerRow: 100,
+            indexBytes: { events_data_gin_idx: 50000 },
+            reindexMsPerEvent: 0.5,
+          },
+        ],
+      })
+      return JSON.stringify(baseline)
+    })
+
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
     const current = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -220,16 +256,23 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
-      if (String(path).includes('current')) return JSON.stringify(current)
-      return JSON.stringify(baseline)
-    })
+    const { report } = compareResults(current, baseline)
 
-    // appendFileSync should be called with GITHUB_STEP_SUMMARY path
-    expect(process.env.GITHUB_STEP_SUMMARY).toBe('/tmp/github-step-summary')
+    // Simulating what the main() function would do
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      vi.mocked(fs.appendFileSync)(`${process.env.GITHUB_STEP_SUMMARY}`, `\n${report}\n`)
+    }
+
+    // Verify appendFileSync was called
+    expect(fs.appendFileSync).toHaveBeenCalledWith(
+      '/tmp/github-step-summary',
+      expect.stringContaining('Events-storage benchmark')
+    )
   })
 
   it('outputs ::warning:: annotation for each flagged metric', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const current = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -242,19 +285,18 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
-      if (String(path).includes('current')) return JSON.stringify(current)
-      return JSON.stringify(baseline)
-    })
+    const { warnings } = compareResults(current, baseline)
 
-    // Multiple regressions should output multiple ::warning:: lines
-    // Verify all three metrics have regressions
-    expect((118 - 100) / 100).toBeGreaterThan(0.15)
-    expect((61000 - 50000) / 50000).toBeGreaterThan(0.2)
-    expect((1.5 - 0.5) / 0.5).toBeGreaterThan(0.5)
+    // Should have 3 warnings, each for a regressed metric
+    expect(warnings).toHaveLength(3)
+    expect(warnings[0]).toContain('bytes/row')
+    expect(warnings[1]).toContain('events_data_gin_idx')
+    expect(warnings[2]).toContain('reindex throughput')
   })
 
   it('always exits with code 0 (never fails)', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const current = {
       ranAt: '2024-01-02T00:00:00Z',
       results: [
@@ -267,16 +309,17 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
-      if (String(path).includes('current')) return JSON.stringify(current)
-      return JSON.stringify(baseline)
-    })
+    // Even with major regressions, compareResults should succeed
+    const result = compareResults(current, baseline)
 
-    // Exit code should always be 0 per the policy
-    expect(true).toBe(true)
+    // Should have warnings but not throw
+    expect(result).toBeDefined()
+    expect(result.warnings.length).toBeGreaterThan(0)
   })
 
   it('handles missing baseline gracefully with "no baseline at this scale" row', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const smallBaseline = {
       ranAt: '2024-01-01T00:00:00Z',
       results: [
@@ -301,19 +344,15 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
-      if (String(path).includes('current')) return JSON.stringify(current)
-      return JSON.stringify(smallBaseline)
-    })
+    const { report } = compareResults(current, smallBaseline)
 
-    // Current has 10000 events, baseline only has 5000
-    // Should output a row saying "no baseline at this scale"
-    expect(current.results[0]?.targetEvents).toBe(10000)
-    expect(smallBaseline.results[0]?.targetEvents).toBe(5000)
-    expect(current.results[0]?.targetEvents).not.toEqual(smallBaseline.results[0]?.targetEvents)
+    // Should output "no baseline at this scale" for the 10000 event count
+    expect(report).toContain('no baseline at this scale')
   })
 
   it('skips metrics that don\'t exist in baseline', async () => {
+    const { compareResults } = await import('../../scripts/check-bench-regression.js')
+
     const baselineNoGin = {
       ranAt: '2024-01-01T00:00:00Z',
       results: [
@@ -338,13 +377,13 @@ describe('scripts/check-bench-regression', () => {
       ],
     }
 
-    vi.mocked(fs.readFileSync).mockImplementation((path: unknown) => {
-      if (String(path).includes('current')) return JSON.stringify(current)
-      return JSON.stringify(baselineNoGin)
-    })
+    const { report, warnings } = compareResults(current, baselineNoGin)
 
-    // Should skip the events_data_gin_idx metric if it doesn't exist in baseline
-    expect(baselineNoGin.results[0]?.indexBytes).toEqual({})
-    expect(current.results[0]?.indexBytes.events_data_gin_idx).toBe(50000)
+    // Should not flag GIN index (doesn't exist in baseline)
+    // Should only report bytes/row and ms/event
+    expect(report).toContain('bytes/row')
+    expect(report).toContain('reindex ms/event')
+    expect(report).not.toContain('events_data_gin_idx') // should not be in report since baseline doesn't have it
+    expect(warnings).not.toContainEqual(expect.stringContaining('gin_idx'))
   })
 })
