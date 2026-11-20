@@ -34,6 +34,7 @@ This repository is one of three that make up OurDAO:
   - [Quarantine](#quarantine)
 - [Testing](#testing)
 - [Security notes](#security-notes)
+- [Documentation](#documentation)
 - [Status](#status)
 - [Contributing](#contributing)
 - [License](#license)
@@ -476,6 +477,14 @@ Tests apply the real `schema.sql` and truncate all tables between runs (`test/db
 - **Rate limiting.** Global rate limiting (`@fastify/rate-limit`) is applied to all API endpoints, with a stricter per-route limit on `GET /api/events`. Health and readiness probes are exempt. Behind a reverse proxy, set `TRUST_PROXY=true` so limits apply per client IP. With in-process limiting, the effective global limit is `RATE_LIMIT_MAX × instance count`.
 - **`GET /api/stream` rate-limit treatment (issue #158).** The stream route is registered inside the `/api` plugin (same prefix and encapsulation as every other route) and is **not** exempt from the global request rate limiter — the initial handshake is a request and counts toward `RATE_LIMIT_MAX`. A long-lived open socket is not a request in the sense the limiter models, so open connections are bounded separately by `STREAM_MAX_CONNECTIONS` / `STREAM_MAX_CONNECTIONS_PER_IP` (issue #156); exceeding either returns `503` with `Retry-After`. The live count is exposed as `connectedStreams` on `GET /api/stats`.
 - **`GET /api/stream` is unauthenticated by design, and broadcasts only DAO-wide state (issue #160).** It never requires a wallet signature — any client can connect and `LISTEN` — but every channel it can subscribe to (`members`, `loan_proposals`, `loans`, `treasury_proposals`, `interest`, `documents`) describes state that's already public via the corresponding `GET` endpoints; a connected client learns nothing an unauthenticated caller couldn't already fetch directly. There is deliberately no per-member channel: a member's own notification feed (loan amounts, defaults, private-vote participation) is only ever available from the authenticated `GET /api/notifications`, and clients are expected to poll that themselves rather than have it pushed over an unauthenticated stream. A client that only cares about a subset of state can request it with `?channels=loans,loan_proposals` (comma-separated `STREAM_CHANNELS` keys) instead of receiving every channel.
+
+## Documentation
+
+- [`docs/LOGGING.md`](./docs/LOGGING.md) — log-field schema and alerting patterns.
+- [`docs/SBOM.md`](./docs/SBOM.md) — retrieving and using the container image's software bill of materials.
+- [`docs/DEPENDENCY-LICENSES.md`](./docs/DEPENDENCY-LICENSES.md) — the dependency license policy enforced by `npm run license:check`.
+- [`docs/API-LATENCY-BASELINE.md`](./docs/API-LATENCY-BASELINE.md) — API latency benchmark methodology.
+- Query plans: [`GET /admin/audit-log`](./docs/admin-audit-log-query-plan.md), [`GET /api/members`](./docs/members-active-idx-query-plan.md), [`GET /api/members/:address/activity`](./docs/member-activity-query-plan.md), [`GET /api/proposals/*?status=`](./docs/proposal-status-query-plan.md).
 
 ## Status
 
