@@ -3,6 +3,7 @@ import { initTelemetry, shutdownTelemetry } from './telemetry.js'
 import { migrate } from './db/migrate.js'
 import { pool, createDedicatedClient } from './db/index.js'
 import { runIndexer, stopIndexer } from './indexer/poller.js'
+import { startWorkerDiagnosticsServer } from './indexer/worker-diagnostics.js'
 import { config } from './config.js'
 import { runMaintenance, logMaintenanceResult } from './db/maintenance.js'
 import { closeRedis } from './cache/redis.js'
@@ -78,6 +79,11 @@ async function main(): Promise<void> {
   const maintenanceAbort = new AbortController()
   const maintenance = runMaintenanceLoop(maintenanceAbort.signal)
 
+  // Issue #503: served from this process because cursorWriteFailures is
+  // process-local. A bind failure is logged and swallowed by the helper; it
+  // must never stop the singleton indexer.
+  const diagnostics = await startWorkerDiagnosticsServer()
+
   let shuttingDown = false
   const shutdown = async (signal: string) => {
     if (shuttingDown) return
@@ -110,6 +116,8 @@ async function main(): Promise<void> {
           `the indexer loop may still have been mid-transaction`
       )
     }
+
+    if (diagnostics) await diagnostics.close()
 
     // Issue #261: The maintenance loop only checks its abort signal between runs (or
     // right after connecting), so it isn't raced here the way the indexer

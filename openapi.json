@@ -901,6 +901,74 @@
         }
       }
     },
+    "/api/admin/quarantine-state": {
+      "get": {
+        "summary": "Per-contract quarantine escalation state",
+        "tags": [
+          "admin"
+        ],
+        "description": "Read-only operator diagnostic over quarantine_state: consecutive whole-page failure count and escalation timestamp per tailed contract. Unauthenticated, like /admin/failed-events; raw error_message and all exception text are never returned. Use ?contract= to scope to one contract.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "contract",
+            "required": false,
+            "description": "Only the quarantine state for this contract id."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "contract_id": {
+                        "type": "string"
+                      },
+                      "failures": {
+                        "type": "integer",
+                        "description": "Current consecutive whole-page failure count."
+                      },
+                      "escalated": {
+                        "type": "boolean",
+                        "description": "True while escalated_at is set."
+                      },
+                      "escalated_at": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/failed-events/{id}/re-evaluate": {
       "post": {
         "parameters": [
@@ -948,6 +1016,83 @@
         "responses": {
           "200": {
             "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/contracts": {
+      "get": {
+        "summary": "Tailed contracts and cursor health",
+        "tags": [
+          "stats"
+        ],
+        "description": "Lists every configured contract (CONTRACT_IDS, or the single CONTRACT_ID) with its last indexed ledger, observed RPC ledger tip, staleness and uncleared reorg halt. Unauthenticated operational diagnostic, consistent with /api/stats and /health. Cursor-write failures are not here: that map is worker-local — see the worker diagnostic listener documented in the README.",
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "contractId": {
+                        "type": "string"
+                      },
+                      "lastIndexedLedger": {
+                        "type": "integer",
+                        "nullable": true
+                      },
+                      "observedTipLedger": {
+                        "type": "integer",
+                        "nullable": true
+                      },
+                      "ledgersBehind": {
+                        "type": "integer",
+                        "nullable": true
+                      },
+                      "secondsSinceUpdate": {
+                        "type": "integer",
+                        "nullable": true
+                      },
+                      "stale": {
+                        "type": "boolean",
+                        "description": "True when the cursor has been idle longer than INDEXER_STALE_AFTER_MS."
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "cold_start",
+                          "stale",
+                          "ok"
+                        ],
+                        "description": "cold_start means no cursor row yet; stale and ok follow /ready's staleness rule."
+                      },
+                      "reorgDetected": {
+                        "type": "boolean",
+                        "description": "True when an uncleared reorg halt exists for this contract."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

@@ -6,7 +6,9 @@ import {
   bool,
   int,
   nonceStore,
-        rpcHeaders: {},
+  parseContractIds,
+  parseStellarRpcHeaders,
+  positiveInt,
   resolveConfig,
   str,
 } from '../src/config.js'
@@ -26,6 +28,21 @@ describe('config helpers', () => {
     expect(int({ VALUE: '1.5' }, 'VALUE', 7)).toBe(7)
     expect(int({ VALUE: '42' }, 'VALUE', 7)).toBe(42)
     expect(int({ VALUE: '-3' }, 'VALUE', 7)).toBe(-3)
+  })
+
+  it('positiveInt keeps positive integers and falls back with a warning for zero/negative (issue #504)', () => {
+    expect(positiveInt({}, 'MISSING', 3600)).toBe(3600)
+    expect(positiveInt({ TTL: '60' }, 'TTL', 3600)).toBe(60)
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(positiveInt({ TTL: '0' }, 'TTL', 3600)).toBe(3600)
+      expect(positiveInt({ TTL: '-5' }, 'TTL', 3600)).toBe(3600)
+      expect(positiveInt({ TTL: 'nope' }, 'TTL', 3600)).toBe(3600)
+      expect(warn).toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('bool uses the fallback for missing and empty values and recognizes true/1', () => {
@@ -179,7 +196,12 @@ describe('resolveConfig', () => {
       cache: {
         redisUrl: undefined,
         memberCacheTtlSeconds: 30,
+        historyCacheTtlSeconds: 3600,
         historyRedisUrl: undefined,
+      },
+      workerDiagnostics: {
+        host: '127.0.0.1',
+        port: 4010,
       },
       maintenance: {
         intervalMs: 7 * 24 * 60 * 60 * 1000,
@@ -190,6 +212,12 @@ describe('resolveConfig', () => {
         serviceName: 'ourdao-backend',
       },
     })
+  })
+
+  it('resolves HISTORY_CACHE_TTL_SECONDS, defaulting to 3600 seconds (issue #504)', () => {
+    expect(resolveConfig({}).cache.historyCacheTtlSeconds).toBe(3600)
+    expect(resolveConfig({ HISTORY_CACHE_TTL_SECONDS: '120' }).cache.historyCacheTtlSeconds).toBe(120)
+    expect(resolveConfig({ HISTORY_CACHE_TTL_SECONDS: '0' }).cache.historyCacheTtlSeconds).toBe(3600)
   })
 
   it('resolves supplied values and falls back from malformed integers', () => {
@@ -288,6 +316,5 @@ describe('parseContractIds (issue #375)', () => {
   it('resolveConfig defaults contractIds to empty array when CONTRACT_IDS is unset', () => {
     const resolved = resolveConfig({ CONTRACT_ID: 'CA' })
     expect(resolved.stellar.contractIds).toEqual([])
-  })
   })
 })

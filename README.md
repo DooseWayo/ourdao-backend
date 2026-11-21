@@ -32,6 +32,7 @@ This repository is one of three that make up OurDAO:
 - [API reference](#api-reference)
   - [Reorg detection](#reorg-detection)
   - [Quarantine](#quarantine)
+  - [Indexer diagnostics](#indexer-diagnostics)
 - [Testing](#testing)
 - [Security notes](#security-notes)
 - [Documentation](#documentation)
@@ -56,6 +57,8 @@ Soroban RPC ──getEvents──▶ indexer (worker.ts) ──▶ Postgres ─�
 - **Real-time notifications** — the indexer and API processes communicate through Postgres LISTEN/NOTIFY. After each fold transaction commits, a NOTIFY fires, which the API's shared listener receives and fans out to connected SSE clients. This message-passing topology is documented in detail in [`docs/REALTIME-NOTIFICATIONS.md`](./docs/REALTIME-NOTIFICATIONS.md), including delivery guarantees, connection costs, and PgBouncer incompatibility.
 
 The API process and the indexer worker are separate entrypoints (`index.ts` / `worker.ts`) so they can be scaled or deployed independently — e.g. one long-running indexer worker behind several stateless, horizontally-scaled API instances.
+
+- **Worker-local cursor-write diagnostics (issue #503).** `src/indexer/poller.ts` records cursor-persistence failures in the in-memory `cursorWriteFailures` map. Because the API and worker are different OS processes, the API process has only its own (empty) copy — importing the getter into the API would report a misleading "everything fine" instead of the worker's real state. The worker therefore starts its own tiny loopback-only HTTP listener (`WORKER_DIAGNOSTICS_HOST`/`WORKER_DIAGNOSTICS_PORT`, default `127.0.0.1:4010`) serving `GET /ready` and `GET /diagnostics/cursor-writes` with the actual worker-local failure state. API `/ready` and `/api/stats` keep their existing response shapes and intentionally do **not** carry this field. Query the API process and you simply get the existing diagnostic without per-contract cursor-write failures; query the worker port when no worker is running and the connection is refused. Put it behind an authenticated proxy if it must be reachable off-host. Cursor-write failures mean event folding committed but the cursor row did not advance — unlike a genuinely stale cursor, with which it can coexist. A successful cursor write clears the failure. See [Indexer diagnostics](#indexer-diagnostics) below.
 
 ## Quick start
 
@@ -113,6 +116,8 @@ All configuration is environment-driven — see [`.env.example`](./.env.example)
 | `DB_STATEMENT_TIMEOUT_MS` | Postgres `statement_timeout` (ms) applied to every connection this pool opens (default 10000). Kills a query that hangs after the connection succeeded — a stuck lock, a database mid-failover — instead of leaving it to run indefinitely (issue #167). |
 | `MIGRATION_LOCK_TIMEOUT_MS` | How long (ms) `migrate()` (called by both the API and worker on every boot) waits to acquire the migration advisory lock before giving up (default 30000). Raise this for an unusually slow migration or a contended environment (issue #590). |
 | `READY_CHECK_TIMEOUT_MS` | How long (ms) `/ready`'s Postgres check is allowed to run before it's treated as a timeout rather than waiting on `DB_CONNECTION_TIMEOUT_MS`/`DB_STATEMENT_TIMEOUT_MS` to fire on their own (default 3000). Distinguishes a hung database (`postgres_timeout`) from a refused connection (`postgres_unreachable`) in the response body (issue #167). |
+| `HISTORY_CACHE_TTL_SECONDS` | TTL (seconds) for `GET /api/stats/history`'s Redis/in-process cache (default 3600; must be a positive integer, issue #504). Mirrors `MEMBER_CACHE_TTL_SECONDS`; both use `REDIS_URL`. |
+| `WORKER_DIAGNOSTICS_HOST` / `WORKER_DIAGNOSTICS_PORT` | Loopback-only listener in the **worker** process exposing per-contract cursor-write failures (defaults `127.0.0.1:4010`, issue #503). The API process cannot serve this process-local state; see [Indexer diagnostics](#indexer-diagnostics). |
 | `START_LEDGER` / `START_LOOKBACK_LEDGERS` | Where to start indexing on a cold start. Public Soroban RPC only retains ~24h of events, so an old start ledger gets clamped to the oldest the RPC still serves. |
 | `POLL_INTERVAL_MS` / `EVENTS_PAGE_LIMIT` | Indexer poll cadence and page size. |
 | `POLL_MAX_BACKOFF_MS` | Cap for exponential backoff after consecutive poll failures (default 60s). |
@@ -233,9 +238,11 @@ Base path: `/api`.
 | Method & path | Description |
 |---|---|
 | `GET /health` | Liveness check + the currently configured contract id. No DB round trip. |
-| `GET /ready` | Readiness probe — checks Postgres reachability and indexer freshness. Returns `503` with a `reason` when Postgres is down or the indexer cursor is stale. |
+| `GET /ready` | Readiness probe — checks Postgres reachability and indexer freshness. Returns `503` with a `reason` when Postgres is down or the indexer cursor is stale. Does **not** include worker-local cursor-write failures; see the worker diagnostic listener below. |
+| `GET /ready` on the worker diagnostic port | Worker-local diagnostic (`WORKER_DIAGNOSTICS_HOST:PORT`, default `127.0.0.1:4010`; also `GET /diagnostics/cursor-writes`). Returns per-contract cursor-write failures from the worker's in-memory tracker, not from the API process. See [Indexer diagnostics](#indexer-diagnostics). |
 | `GET /metrics` | Prometheus metrics: SSE connection count/message throughput plus default Node.js process metrics. |
 | `GET /api/stats` | Aggregate counts (members, loans, proposals) + defaulted-loan count/value + lifetime money figures (`interestCollected`, `principalLent`, `principalRepaid`, `valueDefaulted`, all decimal strings) + `quarantinedEvents` (issue #43) + `lastIndexedLedger` (highest ledger actually folded) and `observedTipLedger` (RPC-observed chain tip, issue #45) as the useful "folded to X, chain is at Y" pair + `connectedStreams` (live SSE connection count on this process, issue #156) + `notificationFailures` (count of failed stream NOTIFYs since process start, issue #169). With multiple `CONTRACT_IDS`, `contracts` adds an entry per configured contract containing `lastIndexedLedger`, `observedTipLedger`, `ledgersBehind`, `quarantinedEvents`, `quarantineEscalatedAt`, and `reorgDetected`; the top-level figures retain their existing aggregate behavior. Cached in-process for `STATS_CACHE_MS` (except `connectedStreams`/`notificationFailures`, which are always live); sets `Cache-Control`. With more than one API instance the cached figures may briefly disagree. |
+| `GET /api/contracts` | Unauthenticated list of every configured contract (`CONTRACT_IDS`, or the single `CONTRACT_ID`) with `lastIndexedLedger`, `observedTipLedger`, `ledgersBehind`, `secondsSinceUpdate`, `stale`, `status` (`cold_start`/`stale`/`ok`) and `reorgDetected` (issue #506). Uses the same cursor/halt/staleness reads as `/api/stats` and `/ready`. Example: `curl http://localhost:4000/api/contracts` → `[{"contractId":"CABC","lastIndexedLedger":1234,"observedTipLedger":1240,"ledgersBehind":6,"secondsSinceUpdate":12,"stale":false,"status":"ok","reorgDetected":false}]`. |
 | `GET /api/interest` | Interest-distribution history — one row per `interest` event (`amount` collected, `active_members` at that distribution). `?before=<ledger>` cursor. |
 | `GET /api/members` | Active members. |
 | `GET /api/members/:address` | Single member. |
@@ -256,6 +263,7 @@ Base path: `/api`.
 | `GET /api/admin/log` | Admin/governance audit trail — init, admin add/remove, threshold changes, policy changes, pause/unpause. |
 | `GET /api/documents?kind=&proposal_id=` | A proposal's attached-document history (issue #44) — existence/history only, never the content hash (still read live from the contract via `get_document`). `kind` (`loan` or `treasury`) and `proposal_id` are both required, since loan and treasury proposal ids are drawn from independent sequences and collide. `?before=<ledger>` cursor. |
 | `GET /api/admin/failed-events` | Quarantined events (issue #43) — the operator-facing detail behind `/api/stats.quarantinedEvents`. Each row has the event id, `contract_id`, symbol, ledger, and `resolved_at` (issue #168, null while still outstanding); raw error text stays in Postgres and the raw `events` row is untouched. `?unresolved=true` narrows the list to `resolved_at IS NULL`; `?contract=` scopes rows and `X-Total-Count` to one deployment. |
+| `GET /api/admin/quarantine-state` | Read-only quarantine escalation state (issue #505): `contract_id`, `failures` (consecutive whole-page failures), `escalated` (`escalated_at IS NOT NULL`) and `escalated_at`. Unauthenticated operator diagnostic like `/admin/failed-events`; `quarantine_state.error_message` is never selected. `?contract=CONTRACT_ID` scopes the list to one deployment. |
 | `POST /api/admin/failed-events/:id/re-evaluate` | Re-attempts the fold for one quarantined event (issue #283) — the HTTP equivalent of `npm run replay-failed -- --id <id>`. Authenticated; writes an `admin_audit_log` entry. `422` if the event still fails. |
 | `POST /api/admin/failed-events/batch-resolve` | Marks up to 500 unresolved quarantined events resolved without replaying them (issue #287). Authenticated; body `{ ids, resolution, note? }`, where `resolution` is `resolved` or `ignored`. Returns `{ resolved }`; writes an `admin_audit_log` entry. |
 | `POST /api/admin/clear-reorg` | Clears an uncleared reorg halt without rebuilding (issue #402) — the HTTP equivalent of `npm run reorg:clear`. Writes an `admin_audit_log` entry. |
@@ -306,6 +314,19 @@ Base path: `/api`.
 
 - `GET /api/admin/log` — Admin/governance audit trail
 - `GET /api/admin/failed-events` — Quarantined events, newest first: `?before=<id>` cursor, `?unresolved=true`, `?symbol=`, `?contract=`, `?from_ledger=`/`?to_ledger=` (inclusive, at most 10000 ledgers apart), `?limit=`; `X-Total-Count` carries the size of the filtered set so the scale is visible without paging
+- `GET /api/admin/quarantine-state` — Quarantine **escalation** state per tailed contract (issue #505), read straight from `quarantine_state` without changing escalation behavior. Unlike `/admin/failed-events` (individual quarantined events), this answers "is this contract mid-escalation, how many consecutive page failures did it hit, and when did it escalate?" Unauthenticated, read-only, and never returns `error_message` or any raw exception text; errors use the standard safe envelope. Optional `?contract=CONTRACT_ID` filters the list.
+
+  ```bash
+  curl 'http://localhost:4000/api/admin/quarantine-state?contract=CABC'
+  ```
+
+  ```json
+  [
+    { "contract_id": "CABC", "failures": 3, "escalated": true, "escalated_at": "2026-11-21T10:30:00.000Z" }
+  ]
+  ```
+
+  A non-escalated row has `"escalated": false, "escalated_at": null`; an empty array means no state has been recorded (or no row matches the filter).
 - `POST /api/admin/failed-events/:id/re-evaluate` — Re-fold one quarantined event through the same `replayFailedEvent` that `npm run replay-failed` uses. Requires signature authentication. Returns `{ eventId, status }`; `422` when the event still fails. Writes a `resolve_quarantined_event` audit entry.
 - `POST /api/admin/failed-events/batch-resolve` — Close up to 500 quarantined events without replaying them. Requires signature authentication. Body: `ids` (positive integers), `resolution` (`resolved` — the underlying problem was fixed — or `ignored` — deliberately dismissed; stored in `failed_events.resolution`), optional `note` (`resolution_note`). Already-resolved or unknown ids are skipped; returns `{ resolved: <count> }`. Use `npm run replay-failed` or the re-evaluate route instead when the event should actually be re-folded. Writes a `resolve_quarantined_event` audit entry.
 - `POST /api/admin/clear-reorg` — HTTP equivalent of `npm run reorg:clear`: acknowledges a recorded ledger discontinuity without rebuilding. Returns `{ halt, cleared }`. With an `Authorization` header the signature is verified and the signer is recorded; without one, the action is attributed to `X-Admin-Address` (or `operator`). Writes a `clear_reorg` audit entry.
@@ -398,7 +419,7 @@ Every response's `Cache-Control` comes from one of four **named policies** defin
 | `public-live`       | `public, max-age=5, must-revalidate`    | Tip-of-chain reads: `/members`, `/members/:address`, `/members/:address/activity`, `/proposals/*`, `/loans`, `/loans/:id`, the two `/timeline` routes, `/stats`, `/stats/history`, and `/events`, `/admin/log`, `/interest`, `/documents` **without** a cursor. |
 | `public-historical` | `public, max-age=3600, must-revalidate` | Cursor pages, which are append-only behind the cursor: `/events` (`?before=`/`?after=`), `/admin/log?before=`, `/interest?before=`, `/documents?before=`.                                                                                                       |
 | `private`           | `private, no-cache`                     | Member-specific data: `/members/:address/summary`, `/notifications`. Never `public`.                                                                                                                                                                            |
-| `no-store`          | `no-store`                              | Authentication challenges, `PATCH` mutations, `/health`, `/ready`, `/version`, `/admin/failed-events`, and the `/stream` SSE endpoint.                                                                                                                          |
+| `no-store`          | `no-store`                              | Authentication challenges, `PATCH` mutations, `/health`, `/ready`, `/version`, `/admin/failed-events`, `/admin/quarantine-state`, `/contracts`, and the `/stream` SSE endpoint.                                                                                    |
 
 - **Default:** a route that names no policy gets `no-store` (an `onRequest` hook), so omitting a decision can never make a response cacheable. An unknown directive is replaced with `no-store` and logged.
 - **Authenticated responses are never shared-cacheable:** a request carrying an `Authorization` header is downgraded from any `public-*` policy to `private`.
@@ -409,7 +430,7 @@ Every response's `Cache-Control` comes from one of four **named policies** defin
   | Endpoint                                                                                                                                                                                                                             | Policy              |
   | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------- |
   | `/health`, `/ready`, `/version`, `/metrics`, `/health/dependencies`                                                                                                                                                                  | `no-store`          |
-  | `/api/auth/*`, `PATCH /api/notifications/*`, `/api/admin/failed-events`, `/api/admin/failed-events/*`, `/api/admin/audit-log`, `/api/stream`                                                                                         | `no-store`          |
+  | `/api/auth/*`, `PATCH /api/notifications/*`, `/api/admin/failed-events`, `/api/admin/failed-events/*`, `/api/admin/quarantine-state`, `/api/admin/audit-log`, `/api/contracts`, `/api/stream`                                    | `no-store`          |
   | `/api/members/:address/summary`, `/api/notifications`                                                                                                                                                                                | `private`           |
   | `/api/members`, `/api/members/:address`, `/api/members/:address/activity`, `/api/proposals/*`, `/api/loans`, `/api/loans/:id`, `/api/loans/:id/timeline`, `/api/proposals/treasury/:id/timeline`, `/api/stats`, `/api/stats/history` | `public-live`       |
   | `/api/events`, `/api/admin/log`, `/api/interest`, `/api/documents` without a cursor                                                                                                                                                  | `public-live`       |
@@ -450,6 +471,35 @@ A handler bug used to be able to wedge the indexer permanently: `ingestPage` fol
 - **`resolved_at` (issue #168).** Both `npm run reindex` and `npm run replay-failed` mark a `failed_events` row `resolved_at = now()` once the event it refers to folds successfully — a reindex re-applies the entire raw log in one transaction, so completing it without error means every outstanding quarantine record was, in that same transaction, just proven fixed. The row itself is never deleted — the failure history (what failed, and why) is kept — only the count changes: `/api/stats.quarantinedEvents` and the default `GET /api/admin/failed-events` view count/list unresolved records only, so the figure means "still a live problem", not "ever happened".
 - **HTTP recovery options.** `POST /api/admin/failed-events/:id/re-evaluate` re-folds a single event (same logic as `npm run replay-failed -- --id`), and `POST /api/admin/failed-events/batch-resolve` closes many events at once as `resolved` or `ignored` without re-folding them. Both require signature authentication and are recorded in `admin_audit_log` — see the [API reference](#api-reference).
 
+### Indexer diagnostics
+
+The indexer tracks two distinct failure signals, and they need different endpoints:
+
+| Signal | Where it lives | How to inspect it |
+|---|---|---|
+| Cursor idle/stale, reorg halt, quarantine escalation | Postgres (`indexer_cursor`, `reorg_halts`, `quarantine_state`) | `GET /ready`, `GET /api/stats`, `GET /api/contracts`, `GET /api/admin/quarantine-state` — readable from any API instance |
+| Cursor **write** failure (fold committed, cursor row did not advance) | In-memory map in the **worker** process only | `GET /ready` or `GET /diagnostics/cursor-writes` on the worker's own listener (`WORKER_DIAGNOSTICS_PORT`, default `4010`) |
+
+A cursor-write failure is not the same as a stalled indexer: events keep being folded, but the persisted cursor stops moving, so `/ready` can report `indexer_stale` at the same time. The per-contract map clears on the next successful cursor write. Check the worker listener before restarting a "stale" worker — a restart is not what fixes a write failure.
+
+```bash
+# From the host running the worker (loopback by default):
+curl http://127.0.0.1:4010/ready
+```
+
+```json
+{
+  "status": "ready",
+  "process": "worker",
+  "cursorWriteFailures": {
+    "CABC": { "failed": true, "at": 1763712000000, "error": "cursor write failed: connection reset" },
+    "CDEF": { "failed": false }
+  }
+}
+```
+
+`error`/`at` are the values the tracker already stores; no count or extra metadata is synthesized. Only configured contracts appear when they have no failure. This listener is process-local: the API process cannot serve it, and an API instance queried instead returns the ordinary `/ready` shape without `cursorWriteFailures`. If no worker is running, the port simply refuses the connection. Do not expose this listener publicly without an authenticated proxy — the tracked error text can contain database details.
+
 ### Docker
 
 ```bash
@@ -472,7 +522,7 @@ npm run lint
 npm run typecheck
 ```
 
-816 tests across 115 files, covering:
+874 tests across 122 files, covering:
 
 - Event decode logic (`decodeEvent`, `toJsonSafe`) in isolation.
 - Every indexer handler (membership, loan lifecycle including defaults, treasury, staking, registry, commit-reveal privacy, document attachments) against a real Postgres instance — not mocked.

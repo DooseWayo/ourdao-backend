@@ -2,7 +2,6 @@ import { createClient, type RedisClientType } from 'redis'
 import { config } from '../config.js'
 
 const HISTORY_CACHE_KEY = 'ourdao:api:stats:history:v1'
-const HISTORY_CACHE_TTL_SECONDS = 3600
 
 export interface LoanHistoryResponse {
   data: Array<{
@@ -61,10 +60,11 @@ export function createHistoryCache(): {
       if (Array.isArray(value.data) && value.data.length === 0) {
         return
       }
-      localValue = { expiresAt: Date.now() + HISTORY_CACHE_TTL_SECONDS * 1000, value }
+      const ttl = config.cache.historyCacheTtlSeconds
+      localValue = { expiresAt: Date.now() + ttl * 1000, value }
       try {
         const redis = await redisClient()
-        await redis?.set(HISTORY_CACHE_KEY, JSON.stringify(value), { EX: HISTORY_CACHE_TTL_SECONDS })
+        await redis?.set(HISTORY_CACHE_KEY, JSON.stringify(value), { EX: ttl })
       } catch {
         // The local cache remains available if Redis is temporarily offline.
       }

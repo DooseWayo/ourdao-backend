@@ -12,6 +12,19 @@ export function int(env: NodeJS.ProcessEnv, name: string, fallback: number): num
   return Number.isFinite(n) && Number.isInteger(n) ? n : fallback
 }
 
+/**
+ * An `int` that must be strictly positive. Cache TTLs are the motivating
+ * case: `EX: 0` (or a negative local expiry) would make the cache either
+ * invalid or useless, so a typo must fall back to the documented default
+ * rather than silently change caching behavior (issue #504).
+ */
+export function positiveInt(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const value = int(env, name, fallback)
+  if (value > 0) return value
+  console.warn(`[config] Invalid ${name}: expected a positive integer — falling back to ${fallback}.`)
+  return fallback
+}
+
 export function bool(env: NodeJS.ProcessEnv, name: string, fallback = false): boolean {
   const v = env[name]
   if (v === undefined || v === '') return fallback
@@ -279,8 +292,18 @@ export function resolveConfig(env: NodeJS.ProcessEnv) {
     // one Postgres read, and clients are never stale by more than this.
     memberCacheTtlSeconds: int(env, 'MEMBER_CACHE_TTL_SECONDS', 30),
     // The /stats/history cache (src/api/history-cache.ts) shares the same
-    // optional Redis instance.
+    // optional Redis instance. Issue #504: its TTL was hardcoded at 3600;
+    // keep that as the default but let operators tune it like the member cache.
+    historyCacheTtlSeconds: positiveInt(env, 'HISTORY_CACHE_TTL_SECONDS', 3600),
     historyRedisUrl: str(env, 'REDIS_URL') || undefined,
+  },
+  // Issue #503: the worker's cursor-write failures are process-local, so the
+  // diagnostic is served by a tiny listener in the worker process rather than
+  // pretending the API process shares that in-memory state. Bound to loopback
+  // by default; expose it through a proxy if remote access is required.
+  workerDiagnostics: {
+    host: str(env, 'WORKER_DIAGNOSTICS_HOST', '127.0.0.1'),
+    port: int(env, 'WORKER_DIAGNOSTICS_PORT', 4010),
   },
   // Issue #279: periodic VACUUM ANALYZE + expired-row cleanup, run from the
   // worker process (src/worker.ts) alongside the indexer loop.
