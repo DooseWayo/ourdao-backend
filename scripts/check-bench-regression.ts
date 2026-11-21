@@ -43,16 +43,7 @@ function fmtPct(p: number): string {
   return `${p >= 0 ? '+' : ''}${(p * 100).toFixed(1)}%`
 }
 
-function main(): void {
-  const [currentPath, baselinePath = 'docs/events-storage-baseline.json'] = process.argv.slice(2)
-  if (!currentPath) {
-    console.error('usage: check-bench-regression.ts <current-results.json> [baseline.json]')
-    process.exit(2)
-  }
-
-  const current: BenchFile = JSON.parse(readFileSync(currentPath, 'utf8'))
-  const baseline: BenchFile = JSON.parse(readFileSync(baselinePath, 'utf8'))
-
+export function compareResults(current: BenchFile, baseline: BenchFile): { report: string; warnings: string[] } {
   const lines: string[] = []
   const warnings: string[] = []
   lines.push('### Events-storage benchmark')
@@ -105,7 +96,20 @@ function main(): void {
     lines.push('No metric regressed beyond threshold.')
   }
 
-  const report = lines.join('\n')
+  return { report: lines.join('\n'), warnings }
+}
+
+function main(): void {
+  const [currentPath, baselinePath = 'docs/events-storage-baseline.json'] = process.argv.slice(2)
+  if (!currentPath) {
+    console.error('usage: check-bench-regression.ts <current-results.json> [baseline.json]')
+    process.exit(2)
+  }
+
+  const current: BenchFile = JSON.parse(readFileSync(currentPath, 'utf8'))
+  const baseline: BenchFile = JSON.parse(readFileSync(baselinePath, 'utf8'))
+
+  const { report, warnings } = compareResults(current, baseline)
   console.log(report)
 
   const summaryPath = process.env.GITHUB_STEP_SUMMARY
