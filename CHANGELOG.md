@@ -70,6 +70,7 @@ Entries that affect deployment or runtime state are annotated:
 - **`docs/REORG_RECOVERY.md`'s `indexer_cursor` description updated for multi-contract tailing**: section 1 described a single `id = 1` row (pre-#289); it now describes the real shape (`contract_id` primary key, one row per tailed contract, `id` vestigial), citing migration `0027_multi_contract_cursor.sql` alongside `0009`. The diagnostic SQL in sections 3-4 that assumed a single row is scoped to `contract_id` (#606).
 
 ### Changed
+- **Production image security refresh**: updated the pinned Node 22 Alpine image and npm lockfile to resolve current audit findings, and removed npm's unused bundled packages from the runtime image after installation.
 - **Node.js 22 is the supported runtime**: the container image is `node:22-alpine` (digest-pinned), `engines.node` is `>=22`, and CI tests Node 22 and 24. Node 20 is end-of-life and is no longer tested or shipped (#350).
 
 ---
