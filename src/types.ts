@@ -186,6 +186,7 @@ export interface DocumentRow {
 export interface FailedEventRow {
   id: number
   event_id: string
+  contract_id: string | null
   symbol: string
   ledger: number
   error: string
@@ -280,6 +281,15 @@ export interface DAOStats {
   // purpose, and restarting it will not help — see docs/REORG_RECOVERY.md.
   reorgDetected: boolean
   reorgHalt: ReorgHaltSummary | null
+  /** Present only when CONTRACT_IDS configures more than one contract. */
+  contracts?: Record<string, {
+    lastIndexedLedger: number | null
+    observedTipLedger: number | null
+    ledgersBehind: number | null
+    quarantinedEvents: number
+    quarantineEscalatedAt: string | null
+    reorgDetected: boolean
+  }>
 }
 
 /** The uncleared discontinuity surfaced by `/ready` and `/api/stats` (issue #191). */

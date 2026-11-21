@@ -117,7 +117,7 @@ describe('indexer: multi-contract event tailing (issue #289)', () => {
   // Issue #384: quarantine state must be tracked per contract_id so contract B polling
   // does not wipe or reset contract A's failure accumulation
   it('independent quarantine state: successful poll on contract B does not reset contract A failures', async () => {
-    const badA = decodedEvent('loan_dflt', { loan_id: 1, borrower: 'GA' })
+    const badA = decodedEvent('loan_dflt', { loan_id: 1, borrower: 'GA' }, { contractId: 'CCONTRACT_A' })
     const goodA = decodedEvent('joined', { member: 'GA_GOOD', fee: '10' })
     const pageA = [badA, goodA]
 
@@ -169,9 +169,10 @@ describe('indexer: multi-contract event tailing (issue #289)', () => {
     await expect(fetchOnce('CCONTRACT_A')).resolves.toBeUndefined()
 
     // Bad event quarantined
-    const failed = await query<{ symbol: string }>('SELECT symbol FROM failed_events')
+    const failed = await query<{ symbol: string; contract_id: string }>('SELECT symbol, contract_id FROM failed_events')
     expect(failed).toHaveLength(1)
     expect(failed[0]?.symbol).toBe('loan_dflt')
+    expect(failed[0]?.contract_id).toBe('CCONTRACT_A')
 
     // Good event folded
     const membersA = await query<{ address: string }>('SELECT address FROM members WHERE address = $1', ['GA_GOOD'])

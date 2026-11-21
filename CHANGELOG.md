@@ -15,6 +15,10 @@ Entries that affect deployment or runtime state are annotated:
 ## [Unreleased]
 
 ### Added
+- **Scheduled SSE stream load test**: weekly and on-demand CI runs `scripts/load-test-stream.sh` against Postgres with 200 clients and 20 notification rounds, preserving its pass/fail exit code and publishing connection and RSS-growth results (#497).
+- **Auth failure tracker coverage**: tests now pin capacity eviction to the lowest `nextAllowedAt` and exercise both periodic staleness rules (#498).
+- **Failed-event contract filter**: quarantine rows record `contract_id`, existing rows are backfilled from `events`, and `GET /api/admin/failed-events?contract=` scopes the list and `X-Total-Count` **[Migration: 0038_failed_events_contract_id.sql]** (#499).
+- **Per-contract stats**: with multiple `CONTRACT_IDS`, `GET /api/stats` includes cursor progress, quarantine count and escalation, and reorg status for each contract; single-contract responses retain their shape (#500).
 - **Worker leader-election lock**: on startup, the worker acquires a dedicated Postgres advisory lock — held on its own connection for the lifetime of the poll loop, distinct from `REINDEX_LOCK_KEY`/`MIGRATION_LOCK_KEY` — and refuses to start with a clear error if another worker instance already holds it against the same database/schema; released cleanly on `SIGTERM`/`SIGINT`, and automatically by Postgres if the holding connection drops (a crash). Closes the gap `docs/DEPLOYMENT.md` flagged where a container scheduler's rescheduling could briefly run two workers and silently corrupt derived state (#584).
 - **OpenTelemetry spans around the indexer's Soroban RPC calls**: `rpc.get_latest_ledger`, `rpc.get_events`, `rpc.get_ledger_hash` — each recording the RPC method and retry count — nested under `indexer.page` where the call happens inside an active page span, so a trace can distinguish RPC latency/retry backoff from Postgres-side fold time (#585).
 - **Timeline truncation signal**: `GET /api/loans/:id/timeline` and `GET /api/proposals/treasury/:id/timeline` now report `truncated`/`total` alongside `timeline`, so a client can tell a lifecycle capped at `TIMELINE_MAX_ROWS` (2000) apart from a complete one — matching the existing `loans_truncated`/`loans_total_count` pattern on the member-summary embed (#586).
@@ -66,6 +70,7 @@ Entries that affect deployment or runtime state are annotated:
 - **`docs/REORG_RECOVERY.md`'s `indexer_cursor` description updated for multi-contract tailing**: section 1 described a single `id = 1` row (pre-#289); it now describes the real shape (`contract_id` primary key, one row per tailed contract, `id` vestigial), citing migration `0027_multi_contract_cursor.sql` alongside `0009`. The diagnostic SQL in sections 3-4 that assumed a single row is scoped to `contract_id` (#606).
 
 ### Changed
+- **Production image security refresh**: updated the pinned Node 22 Alpine image and npm lockfile to resolve current audit findings, and removed npm's unused bundled packages from the runtime image after installation.
 - **Node.js 22 is the supported runtime**: the container image is `node:22-alpine` (digest-pinned), `engines.node` is `>=22`, and CI tests Node 22 and 24. Node 20 is end-of-life and is no longer tested or shipped (#350).
 
 ---

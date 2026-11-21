@@ -1245,6 +1245,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
           before: { type: 'string', description: 'Pagination cursor: return rows with a strictly smaller id than this value.' },
           unresolved: { type: 'string', enum: ['true', 'false'], description: 'When "true", only rows a reindex/replay has not yet resolved.' },
           symbol: { type: 'string', description: 'Only failures of events with this symbol (issue #192).' },
+          contract: { type: 'string', description: 'Only failures from this contract deployment.' },
           from_ledger: { type: 'string', description: 'Only failures from this ledger onwards (issue #192).' },
           to_ledger: { type: 'string', description: 'Only failures up to and including this ledger (issue #192). With from_ledger, the range may span at most 10000 ledgers.' },
         },
@@ -1263,6 +1264,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
             properties: {
               id: { type: 'integer' },
               event_id: { type: 'string' },
+              contract_id: { type: 'string', nullable: true },
               symbol: { type: 'string' },
               ledger: { type: 'integer' },
               created_at: { type: 'string', format: 'date-time' },
@@ -1294,6 +1296,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
       return reply.code(400).send({ error: 'invalid symbol filter' })
     }
     const symbol = typeof q.symbol === 'string' ? q.symbol.trim() : null
+    const contract = typeof q.contract === 'string' && q.contract ? q.contract : null
     if (invalidLedgerRange(q.from_ledger, q.to_ledger)) {
       return reply.code(400).send({
         error: 'invalid ledger range: from_ledger/to_ledger must be non-negative integers, from_ledger <= to_ledger, and the range must not exceed 10000 ledgers',
@@ -1310,6 +1313,10 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     if (symbol !== null) {
       params.push(symbol)
       conditions.push(`symbol = $${params.length}`)
+    }
+    if (contract !== null) {
+      params.push(contract)
+      conditions.push(`contract_id = $${params.length}`)
     }
     if (fromLedger !== null) {
       params.push(fromLedger)
@@ -1335,7 +1342,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
     params.push(l)
     const rows = await query<Omit<FailedEventRow, 'error'>>(
-      `SELECT id, event_id, symbol, ledger, created_at, resolved_at
+      `SELECT id, event_id, contract_id, symbol, ledger, created_at, resolved_at
          FROM failed_events ${where}
         ORDER BY id DESC LIMIT $${params.length}`,
       params
@@ -1617,6 +1624,43 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
       ? ledgersBehind * config.stellar.ledgerCloseTimeSeconds
       : null
 
+    let contracts: DAOStats['contracts']
+    if (config.stellar.contractIds.length > 1) {
+      const contractRows = await query<{
+        contract_id: string
+        last_ledger: number | null
+        observed_tip_ledger: number | null
+        quarantined_events: number
+        escalated_at: string | null
+        reorg_detected: boolean
+      }>(
+        `SELECT ids.contract_id, c.last_ledger, c.observed_tip_ledger,
+                (SELECT count(*)::int FROM failed_events f
+                  WHERE f.contract_id = ids.contract_id AND f.resolved_at IS NULL) AS quarantined_events,
+                q.escalated_at,
+                EXISTS (SELECT 1 FROM reorg_halts r
+                         WHERE r.contract_id = ids.contract_id AND r.cleared_at IS NULL) AS reorg_detected
+           FROM unnest($1::text[]) AS ids(contract_id)
+           LEFT JOIN indexer_cursor c ON c.contract_id = ids.contract_id
+           LEFT JOIN quarantine_state q ON q.contract_id = ids.contract_id`,
+        [config.stellar.contractIds]
+      )
+      contracts = Object.fromEntries(contractRows.map((contract) => [
+        contract.contract_id,
+        {
+          lastIndexedLedger: contract.last_ledger,
+          observedTipLedger: contract.observed_tip_ledger,
+          ledgersBehind: contract.last_ledger != null && contract.observed_tip_ledger != null &&
+            contract.observed_tip_ledger > contract.last_ledger
+            ? contract.observed_tip_ledger - contract.last_ledger
+            : null,
+          quarantinedEvents: contract.quarantined_events,
+          quarantineEscalatedAt: contract.escalated_at == null ? null : new Date(contract.escalated_at).toISOString(),
+          reorgDetected: contract.reorg_detected,
+        },
+      ]))
+    }
+
     return {
       totalMembers: Number(row?.total_members ?? 0),
       activeMembers: Number(row?.active_members ?? 0),
@@ -1660,6 +1704,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
           detail: row.reorg_detail ?? '',
         }
         : null,
+      ...(contracts === undefined ? {} : { contracts }),
       // Issue #156: live SSE connection count for this process.
       connectedStreams: getConnectedStreamCount(),
       // Issue #169: NOTIFY failures since process start — in-process only,
@@ -1692,12 +1737,37 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
             principalRepaid: { type: 'string' },
             valueDefaulted: { type: 'string' },
             quarantinedEvents: { type: 'integer' },
+            quarantineEscalatedAt: { type: ['string', 'null'] },
+            lastIndexedLedger: { type: ['integer', 'null'] },
+            observedTipLedger: { type: ['integer', 'null'] },
+            ledgersBehind: { type: ['integer', 'null'] },
+            estimatedLagSeconds: { type: ['integer', 'null'] },
+            secondsSinceUpdate: { type: ['integer', 'null'] },
+            indexerStale: { type: 'boolean' },
             connectedStreams: { type: 'integer' },
             notificationFailures: { type: 'integer' },
+            reorgDetected: { type: 'boolean' },
+            contracts: {
+              type: 'object',
+              description: 'Per-contract indexer health, present only with multiple CONTRACT_IDS.',
+              additionalProperties: {
+                type: 'object',
+                properties: {
+                  lastIndexedLedger: { type: ['integer', 'null'] },
+                  observedTipLedger: { type: ['integer', 'null'] },
+                  ledgersBehind: { type: ['integer', 'null'] },
+                  quarantinedEvents: { type: 'integer' },
+                  quarantineEscalatedAt: { type: ['string', 'null'] },
+                  reorgDetected: { type: 'boolean' },
+                },
+              },
+            },
             reorgHalt: {
               type: ['object', 'null'],
               properties: {
-                reason: { type: 'string' },
+                detectedAt: { type: 'string' },
+                contractId: { type: 'string' },
+                lastLedger: { type: ['integer', 'null'] },
                 detail: { type: 'string' },
               },
             },
