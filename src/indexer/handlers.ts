@@ -734,8 +734,6 @@ export const channelMap: Record<string, StreamChannel | StreamChannel[]> = {
   loan_rej: STREAM_CHANNELS.loan_proposals,
   loan_appr: [STREAM_CHANNELS.loan_proposals, STREAM_CHANNELS.loans],
   loan_exp: STREAM_CHANNELS.loan_proposals,
-  loan_reject: STREAM_CHANNELS.loan_proposals,
-  loan_disburse: STREAM_CHANNELS.loans,
   loan_rpy: STREAM_CHANNELS.loans,
   loan_dflt: STREAM_CHANNELS.loans,
 
