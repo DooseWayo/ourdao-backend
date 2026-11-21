@@ -39,6 +39,7 @@ import { getOrSetCache, membersListCacheKey, memberSummaryCacheKey } from '../..
 import { replayFailedEvent } from '../../indexer/replay.js'
 import { clearRecordedReorg } from '../../indexer/clear-reorg.js'
 import { createHistoryCache } from '../history-cache.js'
+import { configuredContracts, loadContractCursorHealth } from '../contract-health.js'
 
 function parseLimit(v: unknown, def = 50, max = 200): number | null {
   if (v === undefined || v === null || v === '') return def
@@ -160,6 +161,18 @@ function entityIdParam(v: string): string | null {
   const raw = v.trim()
   if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) <= 0) return null
   return raw
+}
+
+// Optional `?contract=` filter shared by the operator diagnostics that expose
+// per-contract state. Contract ids are opaque strings here (the indexer treats
+// them as such too), so validation only rejects blank/oversized values rather
+// than inventing a stricter format than the rest of the API accepts.
+function contractFilter(v: unknown): string | null | undefined {
+  if (v === undefined || v === null || v === '') return null
+  if (typeof v !== 'string') return undefined
+  const trimmed = v.trim()
+  if (!trimmed || trimmed.length > 256) return undefined
+  return trimmed
 }
 
 // Decode one raw `events` row into a timeline entry (issue #26): named fields
@@ -1483,6 +1496,69 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     return rows
   })
 
+  // --- Quarantine escalation state (issue #505) ---
+  // Same `/admin/` convention as /admin/failed-events above: unauthenticated
+  // operator diagnostic, read-only, and never echoing raw exception text.
+  // `quarantine_state.error_message` is deliberately not selected at all —
+  // it is the same class of handler-exception text /admin/failed-events
+  // withholds. `escalated_at IS NOT NULL` is the "currently escalated" flag:
+  // persistQuarantineState() clears it on a successful fold and keeps it once
+  // escalation has happened (see src/indexer/poller.ts).
+  app.get('/admin/quarantine-state', {
+    schema: {
+      tags: ['admin'],
+      summary: 'Per-contract quarantine escalation state',
+      description:
+        'Read-only operator diagnostic over quarantine_state: consecutive whole-page failure count and escalation timestamp per tailed contract. Unauthenticated, like /admin/failed-events; raw error_message and all exception text are never returned. Use ?contract= to scope to one contract.',
+      querystring: {
+        type: 'object',
+        properties: {
+          contract: { type: 'string', description: 'Only the quarantine state for this contract id.' },
+        },
+      },
+      response: {
+        200: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              contract_id: { type: 'string' },
+              failures: { type: 'integer', description: 'Current consecutive whole-page failure count.' },
+              escalated: { type: 'boolean', description: 'True while escalated_at is set.' },
+              escalated_at: { type: ['string', 'null'], format: 'date-time' },
+            },
+          },
+        },
+        400: {
+          type: 'object',
+          properties: { error: { type: 'string' } },
+        },
+      },
+    },
+  }, async (req, reply) => {
+    const q = req.query as Record<string, unknown>
+    const contract = contractFilter(q.contract)
+    if (contract === undefined) return reply.code(400).send({ error: 'invalid contract filter' })
+
+    const rows = await query<{
+      contract_id: string
+      failures: number
+      escalated_at: string | null
+    }>(
+      `SELECT contract_id, failures, escalated_at
+         FROM quarantine_state
+         ${contract === null ? '' : 'WHERE contract_id = $1'}
+        ORDER BY contract_id`,
+      contract === null ? [] : [contract]
+    )
+    return rows.map((row) => ({
+      contract_id: row.contract_id,
+      failures: row.failures,
+      escalated: row.escalated_at != null,
+      escalated_at: row.escalated_at == null ? null : new Date(row.escalated_at).toISOString(),
+    }))
+  })
+
   // --- Re-evaluate a quarantined event (issue #283) ---
   // The middle ground between "leave it quarantined" and `npm run reindex`
   // (which rebuilds every derived table from the entire raw log): re-attempt
@@ -1759,37 +1835,20 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
 
     let contracts: DAOStats['contracts']
     if (config.stellar.contractIds.length > 1) {
-      const contractRows = await query<{
-        contract_id: string
-        last_ledger: number | null
-        observed_tip_ledger: number | null
-        quarantined_events: number
-        escalated_at: string | null
-        reorg_detected: boolean
-      }>(
-        `SELECT ids.contract_id, c.last_ledger, c.observed_tip_ledger,
-                (SELECT count(*)::int FROM failed_events f
-                  WHERE f.contract_id = ids.contract_id AND f.resolved_at IS NULL) AS quarantined_events,
-                q.escalated_at,
-                EXISTS (SELECT 1 FROM reorg_halts r
-                         WHERE r.contract_id = ids.contract_id AND r.cleared_at IS NULL) AS reorg_detected
-           FROM unnest($1::text[]) AS ids(contract_id)
-           LEFT JOIN indexer_cursor c ON c.contract_id = ids.contract_id
-           LEFT JOIN quarantine_state q ON q.contract_id = ids.contract_id`,
-        [config.stellar.contractIds]
-      )
-      contracts = Object.fromEntries(contractRows.map((contract) => [
-        contract.contract_id,
+      // Issue #506: the per-contract cursor/halt reads live in one shared
+      // helper so /api/contracts and /api/stats cannot drift apart. Only the
+      // fields that were already part of /api/stats are mapped here — the
+      // helper's extra staleness fields are used by the new endpoint.
+      const health = await loadContractCursorHealth(config.stellar.contractIds)
+      contracts = Object.fromEntries(Object.values(health).map((contract) => [
+        contract.contractId,
         {
-          lastIndexedLedger: contract.last_ledger,
-          observedTipLedger: contract.observed_tip_ledger,
-          ledgersBehind: contract.last_ledger != null && contract.observed_tip_ledger != null &&
-            contract.observed_tip_ledger > contract.last_ledger
-            ? contract.observed_tip_ledger - contract.last_ledger
-            : null,
-          quarantinedEvents: contract.quarantined_events,
-          quarantineEscalatedAt: contract.escalated_at == null ? null : new Date(contract.escalated_at).toISOString(),
-          reorgDetected: contract.reorg_detected,
+          lastIndexedLedger: contract.lastIndexedLedger,
+          observedTipLedger: contract.observedTipLedger,
+          ledgersBehind: contract.ledgersBehind,
+          quarantinedEvents: contract.quarantinedEvents,
+          quarantineEscalatedAt: contract.quarantineEscalatedAt,
+          reorgDetected: contract.reorgDetected,
         },
       ]))
     }
@@ -1845,6 +1904,62 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
       notificationFailures: getNotificationFailureCount(),
     }
   }
+
+  // --- Configured contracts and cursor health (issue #506) ---
+  // Unauthenticated, like /api/stats and /health (which already lists the
+  // configured contract ids). No member-private data is exposed. The response
+  // is deliberately a plain array, one entry per configured contract, with
+  // the same staleness/halt conventions /ready and /api/stats use.
+  app.get('/contracts', {
+    schema: {
+      tags: ['stats'],
+      summary: 'Tailed contracts and cursor health',
+      description:
+        'Lists every configured contract (CONTRACT_IDS, or the single CONTRACT_ID) with its last indexed ledger, observed RPC ledger tip, staleness and uncleared reorg halt. Unauthenticated operational diagnostic, consistent with /api/stats and /health. Cursor-write failures are not here: that map is worker-local — see the worker diagnostic listener documented in the README.',
+      response: {
+        200: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              contractId: { type: 'string' },
+              lastIndexedLedger: { type: ['integer', 'null'] },
+              observedTipLedger: { type: ['integer', 'null'] },
+              ledgersBehind: { type: ['integer', 'null'] },
+              secondsSinceUpdate: { type: ['integer', 'null'] },
+              stale: { type: 'boolean', description: 'True when the cursor has been idle longer than INDEXER_STALE_AFTER_MS.' },
+              status: {
+                type: 'string',
+                enum: ['cold_start', 'stale', 'ok'],
+                description: "cold_start means no cursor row yet; stale and ok follow /ready's staleness rule.",
+              },
+              reorgDetected: { type: 'boolean', description: 'True when an uncleared reorg halt exists for this contract.' },
+            },
+          },
+        },
+        503: {
+          type: 'object',
+          properties: { error: { type: 'string' } },
+        },
+      },
+    },
+  }, async () => {
+    const ids = configuredContracts()
+    const health = await loadContractCursorHealth(ids)
+    return ids.map((contractId) => {
+      const contract = health[contractId]!
+      return {
+        contractId,
+        lastIndexedLedger: contract.lastIndexedLedger,
+        observedTipLedger: contract.observedTipLedger,
+        ledgersBehind: contract.ledgersBehind,
+        secondsSinceUpdate: contract.secondsSinceUpdate,
+        stale: contract.stale,
+        status: contract.status,
+        reorgDetected: contract.reorgDetected,
+      }
+    })
+  })
 
   app.get('/stats', {
     schema: {
