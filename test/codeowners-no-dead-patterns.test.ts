@@ -31,7 +31,22 @@ describe('CODEOWNERS has no dead patterns (issue #598)', () => {
     expect(patterns).toContain('.github/')
   })
 
-  it('lists exactly four patterns — the six dead ones are gone, nothing else changed', () => {
-    expect(patterns).toEqual(['.vscode/', '.devcontainer/', 'package.json', 'package-lock.json', '.github/'])
+  // Issue #473: the documented code-owner paths must actually have a pattern.
+  it.each(['src/', 'src/auth.ts', 'src/indexer/', 'src/db/migrations/'])('lists %s', (pattern) => {
+    expect(patterns).toContain(pattern)
+  })
+
+  it('lists exactly the expected patterns — the six dead ones are gone', () => {
+    expect(patterns).toEqual([
+      '.vscode/',
+      '.devcontainer/',
+      'package.json',
+      'package-lock.json',
+      '.github/',
+      'src/',
+      'src/auth.ts',
+      'src/indexer/',
+      'src/db/migrations/',
+    ])
   })
 })

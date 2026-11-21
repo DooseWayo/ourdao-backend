@@ -34,6 +34,7 @@ This repository is one of three that make up OurDAO:
   - [Quarantine](#quarantine)
 - [Testing](#testing)
 - [Security notes](#security-notes)
+- [Documentation](#documentation)
 - [Status](#status)
 - [Contributing](#contributing)
 - [License](#license)
@@ -48,6 +49,7 @@ Soroban RPC ──getEvents──▶ indexer (worker.ts) ──▶ Postgres ─�
 ```
 
 - **`src/indexer`** — a poll loop over the Soroban RPC `getEvents`, resuming from a persisted cursor (`indexer_cursor` table) rather than re-scanning from genesis on every restart. Each raw event is written to an append-only `events` log, then folded into the relevant derived table (`members`, `loan_proposals`, `loans`, `treasury_proposals`, `notifications`) inside a single database transaction, so a crash mid-poll can never leave the derived tables and the raw log inconsistent. After each successful fold, the indexer sends a Postgres NOTIFY to alert connected clients of the change. Poll failures back off exponentially (capped, configurable) instead of hammering the RPC endpoint. The `events` log is never pruned; its growth per unit of DAO activity, the secondary-index costs, and the point at which partitioning becomes worthwhile are documented in [`docs/events-storage.md`](./docs/events-storage.md) (measure with `npm run bench:events`).
+  - **Multi-contract tailing (issue #289).** One worker process can tail several contracts at once via `CONTRACT_IDS`. Each contract gets its own cursor row, quarantine state and poll backoff; a ledger discontinuity on any one contract records a reorg halt tagged with that contract and halts the whole worker. The derived tables (including `dao_totals`), the `events` log and NOTIFY stay global and shared across contracts.
 - **`src/stellar/events.ts`** — the event catalog: the exact topic-symbol → data-tuple mapping the contract publishes, decoded via `scValToNative` and converted to JSON-safe primitives (bigints become strings, since JSON has no native 128-bit integer type).
 - **`src/api`** — a [Fastify](https://fastify.dev) server exposing the read endpoints in the [API reference](#api-reference) below. Includes both request/response REST routes and a Server-Sent Events (SSE) stream at `/api/stream` for real-time notifications.
 - **`src/db`** — the Postgres schema (applied idempotently on boot by both the API and worker processes) and a thin query helper over [`pg`](https://node-postgres.com/).
@@ -100,6 +102,7 @@ All configuration is environment-driven — see [`.env.example`](./.env.example)
 | Variable | Purpose |
 |---|---|
 | `CONTRACT_ID` | Deployed OurDAO contract id. **Required** for the indexer to run. |
+| `CONTRACT_IDS` | Comma-separated contract ids to tail in one indexer process (issue #289). Takes precedence over `CONTRACT_ID` when set; listing the same id twice is rejected at startup. Each contract gets its own `indexer_cursor` row. |
 | `SOROBAN_RPC_URL` | Soroban RPC endpoint (defaults to public testnet). |
 | `NETWORK_PASSPHRASE` | Testnet by default; switch for mainnet. |
 | `STELLAR_LEDGER_CLOSE_TIME_SECONDS` | Nominal Stellar ledger close time in seconds, used by `/ready` to turn `ledgersBehind` into `estimatedLagSeconds` (default 5; not an SLA). |
@@ -144,15 +147,22 @@ To add a schema change: update `schema.sql` to the new desired shape (for fresh 
 | Table | Purpose | Notable columns |
 |---|---|---|
 | `schema_migrations` | Tracks which numbered migrations have been applied | `version`, `name`, `applied_at` |
-| `indexer_cursor` | Single-row resume state for the poll loop | `paging_token`, `last_ledger` (highest ledger actually folded), `observed_tip_ledger` (RPC-observed chain tip — freshness only, kept separate from `last_ledger` since issue #45), `contract_id` (cursor is discarded on a cold start if it belongs to a different contract) |
+| `indexer_cursor` | Resume state for the poll loop, one row per tailed contract (keyed on `contract_id` since migration `0027_multi_contract_cursor.sql`) | `paging_token`, `last_ledger` (highest ledger actually folded), `observed_tip_ledger` (RPC-observed chain tip — freshness only, kept separate from `last_ledger` since issue #45), `contract_id` (cursor is discarded on a cold start if it belongs to a different contract) |
 | `events` | Append-only raw event log — the source everything else is derived from | `symbol`, `topics` (JSONB), `data` (JSONB), `tx_hash` |
 | `members` | Current membership state | `contribution`, `stake`, `has_active_loan`, `pending_claimed`, `name` (from the registry), `defaults_count` |
 | `loan_proposals` | Loan votes in flight | `status` (`pending`/`approved`/`rejected`), `votes_for`, `votes_against`, `voter_count` |
 | `loans` | Disbursed loans | `status` (`active`/`repaid`/`defaulted`), `total_repayment`, `outstanding`, `due_time`. **`id` doubles as the originating `loan_proposals.id`** — the contract reuses the proposal's own id for the disbursed loan rather than a separate counter, since a proposal produces at most one loan. |
 | `treasury_proposals` | Treasury withdrawal votes | `private` (routed through commit-reveal instead of open voting), `status`, `votes_for`, `votes_against`, `voter_count` |
+| `dao_totals` | Singleton row (`id = 1`) of lifetime money figures, updated by the `loan_appr`/`loan_rpy`/`loan_dflt`/`interest` handlers — backs `GET /api/stats`' `interestCollected`/`principalLent`/`principalRepaid`/`valueDefaulted` | `interest_collected`, `principal_lent`, `principal_repaid`, `value_defaulted` |
+| `daily_loan_stats` | Per-day loan rollup written by `incrementDailyLoanStats` — backs `GET /api/stats/history` | `day` (PK), `loans_originated`, `principal_lent`, `principal_repaid`, `defaults_count`, `value_defaulted` |
+| `interest_distributions` | One row per `interest` event — backs `GET /api/interest` | `event_id` (unique), `ledger`, `amount`, `active_members`, `tx_hash` |
 | `notifications` | Per-address notification feed | `type`, `read`, indexed on `(address, read)` |
 | `documents` | Existence/history of a proposal's attached documents (issue #44) — one row per `doc_attn` event, never the content hash itself | `proposal_id`, `kind` (`loan`/`treasury` — loan and treasury proposal ids collide, drawn from independent sequences), `caller`, `ledger` |
 | `failed_events` | Quarantine record for a handler that failed deterministically (issue #43) — additive, never mutates the `events` row it came from | `event_id`, `symbol`, `ledger`, `error`, `resolved_at` (issue #168 — set once a reindex or replay re-folds the event, never deleted) |
+| `admin_audit_log` | Audit trail of admin actions (clearing a reorg, resolving/re-evaluating quarantined events) — **append-only**: the `admin_audit_log_immutable()` trigger rejects every `UPDATE` and `DELETE` | `admin_address`, `action` (an `ADMIN_AUDIT_ACTIONS` value), `ip_address`, `payload` (JSONB), `created_at` |
+| `reorg_halts` | Recorded ledger discontinuities (issue #191) — an uncleared row is what `GET /ready` and `GET /api/stats` report as `reorgDetected`/`reorgHalt` (see [Reorg detection](#reorg-detection)) | `contract_id`, `last_ledger`, `last_ledger_hash`, `detail`, `detected_at`, `cleared_at`, `cleared_by` |
+| `quarantine_state` | Per-contract consecutive-failure counter that drives the indexer's escalation to per-event folding (see [Quarantine](#quarantine)) | `contract_id`, `page_key`, `error_message`, `failures`, `escalated_at` |
+| `auth_nonces` | Postgres-backed nonce store for signature authentication — a nonce is consumed once and expires | `nonce`, `address`, `expires_at` |
 
 On-chain `i128` amounts are stored as `NUMERIC(40,0)` (an i128's max value is ~1.7×10³⁸, which fits under 10³⁹) and returned from the API as **decimal strings**, never JSON numbers, to avoid silent precision loss — this was in fact a real bug found and fixed during development: `pg` returns Postgres `BIGINT` columns as JS strings by default, and the original code assumed they came back as numbers.
 
@@ -188,10 +198,11 @@ The full topic-symbol → data-tuple mapping this service decodes (kept in sync 
 | `loan_edit`                                                                   | `proposal_id, borrower, new_amount, total_repayment`                                  | updates the proposal                                                                                                                                                                                                                                                                                                                       |
 | `loan_vote`                                                                   | `proposal_id, voter, support`, plus a reserved `weight` not yet published (see above) | adds the vote's weight to the tally, bumps `voter_count`                                                                                                                                                                                                                                                                                   |
 | `loan_wait`                                                                   | `id, amount`                                                                          | the proposal reached quorum but the treasury can't cover it yet — marks it `approved_pending_disbursement` (issue #125). A later `disburse_approved_loan` call resolves this and republishes `loan_appr`                                                                                                                                   |
-| `loan_rej`                                                                    | `id, for_votes, against_votes`                                                        | an early rejection when the votes still outstanding can no longer reach quorum (issue #124) — marks the proposal `rejected`, distinct from `loan_exp`'s post-window keeper path below                                                                                                                                                      |
+| `loan_rej`                                                                    | `id, for_votes, against_votes`                                                        | an early rejection when the votes still outstanding can no longer reach quorum (issue #124) — marks the proposal `rejected`, distinct from the post-window `loan_exp` keeper path                                                                                                                                                          |
 | `loan_appr`                                                                   | `id, borrower, amount`, plus a reserved `due_time` not yet published                  | marks the proposal approved, opens a `loans` row seeded with `total_repayment` from the matching proposal (not the bare principal — see below), flags the borrower's `has_active_loan`                                                                                                                                                     |
 | `loan_rpy`                                                                    | `loan_id, borrower, outstanding`                                                      | updates outstanding balance; marks `repaid` when it hits zero                                                                                                                                                                                                                                                                              |
 | `loan_dflt`                                                                   | `loan_id, borrower, penalty`                                                          | marks the loan `defaulted`, slashes the borrower's `contribution` by the penalty (clamped at zero), bumps `defaults_count`, clears `has_active_loan` — idempotent, so redelivering the same event is a no-op past the first application                                                                                                    |
+| `loan_exp`                                                                    | `proposal_id, borrower`                                                               | the permissionless keeper call after a loan proposal's voting window closes undecided — marks the proposal `rejected` if still `pending` (a re-delivered event is a no-op) and sends the borrower a `warning` notification                                                                                                                 |
 | `interest`                                                                    | `interest, active`                                                                    | no per-member breakdown to attribute, but folded into `dao_totals.interest_collected` and one `interest_distributions` row (issue #24). `interest` is interest _collected_ — the contract keeps the indivisible per-member remainder, so it slightly exceeds what members were credited. Per-member yield is still surfaced via `claimed`. |
 | `tre_prop`                                                                    | `id, amount, destination, private`                                                    | inserts a pending `treasury_proposals` row                                                                                                                                                                                                                                                                                                 |
 | `tre_vote`                                                                    | `id, voter, support`, plus a reserved `weight` not yet published                      | adds the vote's weight to the tally, bumps `voter_count`                                                                                                                                                                                                                                                                                   |
@@ -231,10 +242,12 @@ Base path: `/api`.
 | `GET /api/members/:address/summary` | Member's dashboard data, including the member row, up to 100 loans, unread notification count, and their relative position to DAO totals (share percentages in basis points) in a single consistent snapshot. |
 | `GET /api/members/:address/activity` | Every event that names this address as a participant (joins, stakes, loan actions, votes), newest first (issue #26). `?before=<ledger>` cursor. Each entry is the decoded event: `id`, `symbol`, `ledger`, `timestamp`, `tx_hash`, and named `fields`. |
 | `GET /api/proposals/loan` | Loan proposals with vote tallies (`votes_for`/`votes_against`), a distinct `voter_count`, and an explicit `tallies_weighted: false` flag. |
+| `GET /api/proposals/loan/:id` | Single loan proposal, with the same tallies and `tallies_weighted: false` flag as the list. A nonexistent id returns `404` (unlike the timeline routes); a non-numeric id is a `400`. |
 | `GET /api/loans` | Loans. Optional `?borrower=`, `?before=<id>` for pagination. `status` is `active`, `repaid`, or `defaulted` — a loan is marked defaulted once it's past due plus the policy's grace period (permissionless on-chain, see `ourdao-contracts`). Each loan includes derived `interest_charge` and `repaid_amount` fields. |
 | `GET /api/loans/:id` | Single loan, with the same derived `interest_charge`/`repaid_amount` fields. |
 | `GET /api/loans/:id/timeline` | A loan's full lifecycle in chronological order (issue #26): `loan_req`, `loan_edit`, `loan_vote`, `loan_wait`, `loan_rej`, `loan_appr`, `loan_rpy`, `loan_dflt`, `loan_exp`. Returns `{ "timeline": [...], "truncated": false, "total": 6 }` where each timeline entry is the decoded event — `id`, `symbol`, `ledger`, `timestamp`, `tx_hash`, and named `fields` (not raw JSONB) — `total` is every matching event regardless of the cap, and `truncated` is `true` once a lifecycle exceeds `TIMELINE_MAX_ROWS` (2000) rows, so a client can tell "capped" apart from "complete" (issue #586). A nonexistent id returns an empty timeline (`200`), not a `404`. |
 | `GET /api/proposals/treasury` | Treasury proposals with vote tallies, a distinct `voter_count`, and an explicit `tallies_weighted: false` flag. |
+| `GET /api/proposals/treasury/:id` | Single treasury proposal, same shape as a list row. A nonexistent id returns `404` (unlike the timeline routes); a non-numeric id is a `400`. |
 | `GET /api/proposals/treasury/:id/timeline` | A treasury proposal's full lifecycle in chronological order (issue #26): `tre_prop`, `tre_vote`, `committed`, `revealed`, `tre_wait`, `tre_rej`, `tre_exec`. Same shape (including `truncated`/`total`, issue #586) and empty-not-404 behaviour as the loan timeline. |
 | `GET /api/notifications?address=` | Notifications for an address. |
 | `PATCH /api/notifications/:id/read` | Mark one notification read. |
@@ -243,14 +256,18 @@ Base path: `/api`.
 | `GET /api/admin/log` | Admin/governance audit trail — init, admin add/remove, threshold changes, policy changes, pause/unpause. |
 | `GET /api/documents?kind=&proposal_id=` | A proposal's attached-document history (issue #44) — existence/history only, never the content hash (still read live from the contract via `get_document`). `kind` (`loan` or `treasury`) and `proposal_id` are both required, since loan and treasury proposal ids are drawn from independent sequences and collide. `?before=<ledger>` cursor. |
 | `GET /api/admin/failed-events` | Quarantined events (issue #43) — the operator-facing detail behind `/api/stats.quarantinedEvents`. Each row has the event id, `contract_id`, symbol, ledger, and `resolved_at` (issue #168, null while still outstanding); raw error text stays in Postgres and the raw `events` row is untouched. `?unresolved=true` narrows the list to `resolved_at IS NULL`; `?contract=` scopes rows and `X-Total-Count` to one deployment. |
+| `POST /api/admin/failed-events/:id/re-evaluate` | Re-attempts the fold for one quarantined event (issue #283) — the HTTP equivalent of `npm run replay-failed -- --id <id>`. Authenticated; writes an `admin_audit_log` entry. `422` if the event still fails. |
+| `POST /api/admin/failed-events/batch-resolve` | Marks up to 500 unresolved quarantined events resolved without replaying them (issue #287). Authenticated; body `{ ids, resolution, note? }`, where `resolution` is `resolved` or `ignored`. Returns `{ resolved }`; writes an `admin_audit_log` entry. |
+| `POST /api/admin/clear-reorg` | Clears an uncleared reorg halt without rebuilding (issue #402) — the HTTP equivalent of `npm run reorg:clear`. Writes an `admin_audit_log` entry. |
+| `GET /api/admin/audit-log` | Reads the append-only `admin_audit_log` table (issue #291). Authenticated. |
 | `GET /api/stream` | Server-Sent Events stream of real-time change notifications (issue #63). Registered inside the `/api` plugin like every other route (issue #158). Sends lightweight change signals like `members_changed`, `loan_proposals_changed` as the indexer folds events — clients refetch via the endpoints above. Each message includes the channel name and timestamp. Optional `?channels=members,loans` subscribes to only that subset instead of every channel (issue #160) — see [Security notes](#security-notes) for why there is no per-member channel. The stream uses Postgres `LISTEN`/`NOTIFY` under the hood (`pg_notify` with bound parameters, issue #153): every API instance keeps exactly **one** shared listener connection for the whole process and fans notifications out to its own connected clients in-process (issue #152), rather than each client holding a dedicated connection — multiple instances still fan out independently without coordination. The server enforces backpressure (issue #157), concurrent connection caps with `503` + `Retry-After` (issue #156), and a socket idle timeout. The initial handshake stays under the global request rate limiter; open connections are bounded by `STREAM_MAX_*` rather than the request limiter (see Security notes). See [Reconnecting and missed changes](#reconnecting-and-missed-changes) for the `id`/`Last-Event-ID` guarantee. |
 
 - `GET /health` — Liveness check + currently configured contract id (no DB round trip)
 - `GET /ready` — Readiness probe (checks Postgres reachability and indexer freshness; a recorded ledger discontinuity answers `503` with `reason: reorg_detected`, see [Reorg detection](#reorg-detection); a failing indexer-state query other than a missing table answers `503` with `reason: postgres_error`, issue #347)
 - `GET /version` — Build metadata (version, commit, build date)
 - `GET /metrics` — Prometheus scrape endpoint (issue #274): `ourdao_sse_connections` (gauge, currently open SSE connections), `ourdao_sse_connections_total` (counter, SSE connections opened ever), `ourdao_sse_messages_total` (counter, SSE messages written, labeled by `event_type`), plus Node.js's default process/runtime metrics
-- `GET /api/stats` — Aggregate DAO statistics (members, loans, proposals, money figures, quarantine count, indexer state, and `reorgDetected`/`reorgHalt` for an uncleared ledger discontinuity)
-- `GET /api/stats/history` — Daily loan principal lent/repaid, defaults, defaulted value, and cumulative default rate (`data` timeseries; money values are decimal strings)
+- `GET /api/stats` — Aggregate DAO statistics (members, loans, proposals, money figures from `dao_totals`, quarantine count, indexer state, and `reorgDetected`/`reorgHalt` for an uncleared ledger discontinuity)
+- `GET /api/stats/history` — Daily loan principal lent/repaid, defaults, defaulted value, and cumulative default rate (`data` timeseries; money values are decimal strings), read from `daily_loan_stats`
 
 **Members:**
 
@@ -262,6 +279,7 @@ Base path: `/api`.
 **Loans:**
 
 - `GET /api/proposals/loan` — Loan proposals with vote tallies
+- `GET /api/proposals/loan/:id` — Single loan proposal (`404` for a nonexistent id)
 - `GET /api/loans` — Loans list (optional `?borrower=` filter)
 - `GET /api/loans/:id` — Single loan
 - `GET /api/loans/:id/timeline` — Loan's full lifecycle events
@@ -269,6 +287,7 @@ Base path: `/api`.
 **Treasury:**
 
 - `GET /api/proposals/treasury` — Treasury proposals with vote tallies
+- `GET /api/proposals/treasury/:id` — Single treasury proposal (`404` for a nonexistent id)
 - `GET /api/proposals/treasury/:id/timeline` — Treasury proposal's full lifecycle events
 
 **Notifications:**
@@ -280,13 +299,17 @@ Base path: `/api`.
 **Events & History:**
 
 - `GET /api/events` — Raw event feed (optional filters: `?symbol=`, `?contract=`, `?before=`, `?after=`, `?order=`)
-- `GET /api/interest` — Interest distribution history
+- `GET /api/interest` — Interest distribution history, read from `interest_distributions`
 - `GET /api/documents` — Document attachment history, newest ledger first. All filters optional and combinable: `?kind=loan|treasury`, `?proposal_id=` (requires `kind` — loan and treasury ids collide), `?caller=<G… address>` (a member's attachments), plus `?before=<ledger>` and `?limit=`
 
 **Admin:**
 
 - `GET /api/admin/log` — Admin/governance audit trail
 - `GET /api/admin/failed-events` — Quarantined events, newest first: `?before=<id>` cursor, `?unresolved=true`, `?symbol=`, `?contract=`, `?from_ledger=`/`?to_ledger=` (inclusive, at most 10000 ledgers apart), `?limit=`; `X-Total-Count` carries the size of the filtered set so the scale is visible without paging
+- `POST /api/admin/failed-events/:id/re-evaluate` — Re-fold one quarantined event through the same `replayFailedEvent` that `npm run replay-failed` uses. Requires signature authentication. Returns `{ eventId, status }`; `422` when the event still fails. Writes a `resolve_quarantined_event` audit entry.
+- `POST /api/admin/failed-events/batch-resolve` — Close up to 500 quarantined events without replaying them. Requires signature authentication. Body: `ids` (positive integers), `resolution` (`resolved` — the underlying problem was fixed — or `ignored` — deliberately dismissed; stored in `failed_events.resolution`), optional `note` (`resolution_note`). Already-resolved or unknown ids are skipped; returns `{ resolved: <count> }`. Use `npm run replay-failed` or the re-evaluate route instead when the event should actually be re-folded. Writes a `resolve_quarantined_event` audit entry.
+- `POST /api/admin/clear-reorg` — HTTP equivalent of `npm run reorg:clear`: acknowledges a recorded ledger discontinuity without rebuilding. Returns `{ halt, cleared }`. With an `Authorization` header the signature is verified and the signer is recorded; without one, the action is attributed to `X-Admin-Address` (or `operator`). Writes a `clear_reorg` audit entry.
+- `GET /api/admin/audit-log` — Admin action audit trail, newest first, from the append-only `admin_audit_log` table. Requires signature authentication (rows contain admin and IP addresses). Query: `?before=<id>` cursor, `?limit=`, `?admin=<G… address>`, `?action=<label>`. Returns an array of `{ id, admin_address, action, ip_address, payload, created_at }`. `action` is one of `ADMIN_AUDIT_ACTIONS` in [`src/types.ts`](src/types.ts), which is **append-only** like `ERROR_CODES`: a value is never renamed, removed or repurposed, only added.
 
 **Real-time:**
 
@@ -302,7 +325,7 @@ For detailed request/response schemas, query parameters, and authentication requ
 
 ### Common patterns
 
-All list endpoints accept `?limit=` (default 50, max 200). `?before=` and `?after=` are cursors: pass the `id` (or `ledger`) of the last row you saw to page. For `/api/events`, the cursor can be a deterministic `(ledger, id)` value and ordering is strictly deterministic (`ledger DESC, id DESC` by default, or `ASC`).
+All list endpoints accept `?limit=` (default 50, max 200); single-lookup routes (`/:id`, `/:address`) don't. `?before=` and `?after=` are cursors: pass the `id` (or `ledger`) of the last row you saw to page. For `/api/events`, the cursor can be a deterministic `(ledger, id)` value and ordering is strictly deterministic (`ledger DESC, id DESC` by default, or `ASC`).
 
 On-chain `i128` amounts are returned as decimal **strings** to preserve precision (see [Database schema](#database-schema)); ledger sequence numbers are returned as regular JSON numbers.
 
@@ -402,7 +425,7 @@ Stellar's consensus gives fast finality, so a deep reorg is genuinely unlikely �
 
 - The cursor stores `last_ledger` and `last_ledger_hash` — the hash of that same ledger, fetched by sequence from the RPC (Soroban's `getEvents` exposes no per-event ledger hash, so this is the only way to get one).
 - Each poll checks continuity two ways: if the RPC's reported latest ledger is **below** the last folded ledger, or a fetched page contains an event from a ledger already folded past, the indexer **halts** with a loud log line instead of retrying. It also re-fetches the RPC's current hash for `last_ledger` and compares it against what's stored (issue #128) — this catches a **same-height fork**, where history diverges without the ledger sequence ever moving backwards, which the sequence-only checks can't see. A ledger the RPC has since pruned is treated as unverifiable, not as a fork.
-- **The halt is recorded, not only logged (issue #191):** before the worker exits it writes the discontinuity (contract, last folded ledger and hash, detail) to `reorg_halts`. While that record is uncleared, `GET /ready` answers `503` with `reason: reorg_detected` (a different reason from `indexer_stale`, so an orchestrator can tell a deliberate halt from a slow RPC), `GET /api/stats` reports `reorgDetected: true` with the details in `reorgHalt`, and **the worker refuses to start** — an automatic container restart cannot resume past diverged history. `npm run reindex` clears the record in the same transaction as the rebuild; `npm run reorg:clear` acknowledges a false alarm without rebuilding.
+- **The halt is recorded, not only logged (issue #191):** before the worker exits it writes the discontinuity (contract, last folded ledger and hash, detail) to `reorg_halts`. While that record is uncleared, `GET /ready` answers `503` with `reason: reorg_detected` (a different reason from `indexer_stale`, so an orchestrator can tell a deliberate halt from a slow RPC), `GET /api/stats` reports `reorgDetected: true` with the details in `reorgHalt`, and **the worker refuses to start** — an automatic container restart cannot resume past diverged history. `npm run reindex` clears the record in the same transaction as the rebuild; `npm run reorg:clear` (or its HTTP equivalent, [`POST /api/admin/clear-reorg`](#api-reference)) acknowledges a false alarm without rebuilding.
 - **Recovery:** stop the indexer worker (`node dist/worker.js`) and run `npm run reindex` (`node dist/indexer/reindex.js` in the container). It truncates the derived tables and rebuilds them from the raw `events` log in one transaction — the log is authoritative and untouched. A rebuild produces state identical to the incremental fold (asserted by a test), so `reindex` is also the repair path for the historical-data bugs tracked in other issues. The complete diagnosis-and-recovery procedure is the runbook: [`docs/REORG_RECOVERY.md`](./docs/REORG_RECOVERY.md).
 - **Worker serialization (Advisory Lock):** Both `reindex` and the worker's event fold loops acquire a dedicated session-level Postgres advisory lock (`0x0d400001`). If a reindex is attempted while a worker is running or folding, it fails immediately with an actionable error rather than racing to corrupt derived state.
 - **Streaming & Memory Bounds:** The rebuild streams the event log via keyset pagination over `(ledger, id)` in batches (default 1,000) inside a single transaction, keeping Node.js memory flat (~40–60 MB RSS) regardless of event log size (e.g., 100k+ events). Progress is logged periodically with event counts, percentage, throughput (events/s), and estimated ETA.
@@ -425,6 +448,7 @@ A handler bug used to be able to wedge the indexer permanently: `ingestPage` fol
 - Quarantined events are visible at `GET /api/admin/failed-events` (add `?unresolved=true` to see only the ones still outstanding) and counted in `GET /api/stats.quarantinedEvents`.
 - **Recovering without a full reindex (issue #170).** `npm run replay-failed [-- --id <failed_events.id>]` re-folds a single quarantined event (or, with no `--id`, every unresolved one) directly through `applyEvent`, in its own transaction, under the same `REINDEX_LOCK_KEY` advisory lock a reindex uses — so it never races the live poller or a concurrent reindex. It is a script, not an API endpoint, deliberately: nothing HTTP-reachable can trigger a replay. It is idempotent — a record already marked `resolved_at` is skipped, and a fold keyed on `events.folded_at` (issue #119) is never double-applied — and a replay that still fails leaves the record's `error` and `resolved_at` untouched (still outstanding) rather than double-counting it as a new failure.
 - **`resolved_at` (issue #168).** Both `npm run reindex` and `npm run replay-failed` mark a `failed_events` row `resolved_at = now()` once the event it refers to folds successfully — a reindex re-applies the entire raw log in one transaction, so completing it without error means every outstanding quarantine record was, in that same transaction, just proven fixed. The row itself is never deleted — the failure history (what failed, and why) is kept — only the count changes: `/api/stats.quarantinedEvents` and the default `GET /api/admin/failed-events` view count/list unresolved records only, so the figure means "still a live problem", not "ever happened".
+- **HTTP recovery options.** `POST /api/admin/failed-events/:id/re-evaluate` re-folds a single event (same logic as `npm run replay-failed -- --id`), and `POST /api/admin/failed-events/batch-resolve` closes many events at once as `resolved` or `ignored` without re-folding them. Both require signature authentication and are recorded in `admin_audit_log` — see the [API reference](#api-reference).
 
 ### Docker
 
@@ -448,7 +472,7 @@ npm run lint
 npm run typecheck
 ```
 
-783 tests across 107 files, covering:
+816 tests across 115 files, covering:
 
 - Event decode logic (`decodeEvent`, `toJsonSafe`) in isolation.
 - Every indexer handler (membership, loan lifecycle including defaults, treasury, staking, registry, commit-reveal privacy, document attachments) against a real Postgres instance — not mocked.
@@ -476,6 +500,14 @@ Tests apply the real `schema.sql` and truncate all tables between runs (`test/db
 - **Rate limiting.** Global rate limiting (`@fastify/rate-limit`) is applied to all API endpoints, with a stricter per-route limit on `GET /api/events`. Health and readiness probes are exempt. Behind a reverse proxy, set `TRUST_PROXY=true` so limits apply per client IP. With in-process limiting, the effective global limit is `RATE_LIMIT_MAX × instance count`.
 - **`GET /api/stream` rate-limit treatment (issue #158).** The stream route is registered inside the `/api` plugin (same prefix and encapsulation as every other route) and is **not** exempt from the global request rate limiter — the initial handshake is a request and counts toward `RATE_LIMIT_MAX`. A long-lived open socket is not a request in the sense the limiter models, so open connections are bounded separately by `STREAM_MAX_CONNECTIONS` / `STREAM_MAX_CONNECTIONS_PER_IP` (issue #156); exceeding either returns `503` with `Retry-After`. The live count is exposed as `connectedStreams` on `GET /api/stats`.
 - **`GET /api/stream` is unauthenticated by design, and broadcasts only DAO-wide state (issue #160).** It never requires a wallet signature — any client can connect and `LISTEN` — but every channel it can subscribe to (`members`, `loan_proposals`, `loans`, `treasury_proposals`, `interest`, `documents`) describes state that's already public via the corresponding `GET` endpoints; a connected client learns nothing an unauthenticated caller couldn't already fetch directly. There is deliberately no per-member channel: a member's own notification feed (loan amounts, defaults, private-vote participation) is only ever available from the authenticated `GET /api/notifications`, and clients are expected to poll that themselves rather than have it pushed over an unauthenticated stream. A client that only cares about a subset of state can request it with `?channels=loans,loan_proposals` (comma-separated `STREAM_CHANNELS` keys) instead of receiving every channel.
+
+## Documentation
+
+- [`docs/LOGGING.md`](./docs/LOGGING.md) — log-field schema and alerting patterns.
+- [`docs/SBOM.md`](./docs/SBOM.md) — retrieving and using the container image's software bill of materials.
+- [`docs/DEPENDENCY-LICENSES.md`](./docs/DEPENDENCY-LICENSES.md) — the dependency license policy enforced by `npm run license:check`.
+- [`docs/API-LATENCY-BASELINE.md`](./docs/API-LATENCY-BASELINE.md) — API latency benchmark methodology.
+- Query plans: [`GET /admin/audit-log`](./docs/admin-audit-log-query-plan.md), [`GET /api/members`](./docs/members-active-idx-query-plan.md), [`GET /api/members/:address/activity`](./docs/member-activity-query-plan.md), [`GET /api/proposals/*?status=`](./docs/proposal-status-query-plan.md).
 
 ## Status
 

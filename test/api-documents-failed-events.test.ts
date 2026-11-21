@@ -340,6 +340,52 @@ describe('API: POST /api/admin/failed-events/batch-resolve (issue #287)', () => 
     expect(row[0]?.resolution_note).toBeNull()
   })
 
+  it('issue #492: "ignored" resolves without re-folding, and the full list still shows it', async () => {
+    const admin = Keypair.random()
+    const authHeader = await buildAuthHeader(admin)
+    const [ignoredId, replayedId] = await insertFailedEvents(2)
+    await query(
+      `INSERT INTO events (id, ledger, closed_at, contract_id, symbol, topics, data)
+       VALUES ('1-0', 1, now(), 'CTEST', 'loan_dflt', '[]', '{}')`
+    )
+    // Stands in for a successful reindex/replay, which writes 'resolved'.
+    await query(`UPDATE failed_events SET resolved_at = now(), resolution = 'resolved' WHERE id = $1`, [replayedId])
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/failed-events/batch-resolve',
+      headers: { authorization: authHeader },
+      payload: { ids: [ignoredId], resolution: 'ignored' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ resolved: 1 })
+
+    const fe = await query<{ resolution: string; resolved_at: string | null }>(
+      `SELECT resolution, resolved_at FROM failed_events WHERE id = $1`,
+      [ignoredId]
+    )
+    expect(fe[0]?.resolution).toBe('ignored')
+    expect(fe[0]?.resolved_at).not.toBeNull()
+    const ev = await query<{ folded_at: string | null }>(`SELECT folded_at FROM events WHERE id = '1-0'`)
+    expect(ev[0]?.folded_at).toBeNull()
+
+    const all = await app.inject({ method: 'GET', url: '/api/admin/failed-events' })
+    expect(all.statusCode).toBe(200)
+    const listed = all.json<Array<{ id: number; resolved_at: string | null }>>()
+    expect(listed.map((r) => r.id).sort()).toEqual([ignoredId, replayedId].sort())
+    expect(listed.every((r) => r.resolved_at !== null)).toBe(true)
+
+    const unresolved = await app.inject({ method: 'GET', url: '/api/admin/failed-events?unresolved=true' })
+    expect(unresolved.json()).toEqual([])
+
+    const byResolution = await query<{ id: number; resolution: string }>(
+      `SELECT id, resolution FROM failed_events WHERE id = ANY($1) ORDER BY id`,
+      [[ignoredId, replayedId]]
+    )
+    expect(byResolution.find((r) => r.id === ignoredId)?.resolution).toBe('ignored')
+    expect(byResolution.find((r) => r.id === replayedId)?.resolution).toBe('resolved')
+  })
+
   it('excludes an already-resolved id from the count rather than erroring the batch', async () => {
     const admin = Keypair.random()
     const authHeader = await buildAuthHeader(admin)

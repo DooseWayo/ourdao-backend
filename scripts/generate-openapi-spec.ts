@@ -8,12 +8,27 @@
  */
 
 import { writeFileSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { buildServer } from '../src/api/server.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUTPUT_PATH = join(__dirname, '../openapi.json')
+
+/** Builds the server and returns the spec it serves. Shared with
+ *  test/openapi-spec-sync.test.ts so drift fails in `npm test` too. */
+export async function generateOpenApiSpec(): Promise<unknown> {
+  const app = await buildServer()
+
+  // Wait for all plugins to be registered
+  await app.ready()
+
+  // Fastify's swagger plugin adds a .swagger() method to the instance
+  const spec = (app as unknown as { swagger: () => unknown }).swagger()
+
+  await app.close()
+  return spec
+}
 
 async function main() {
   // Set DATABASE_URL to a dummy value so buildServer doesn't fail
@@ -23,15 +38,7 @@ async function main() {
   process.env.SOROBAN_RPC_URL ??= 'https://soroban-testnet.stellar.org'
   process.env.LOG_LEVEL = 'silent'
 
-  const app = await buildServer()
-  
-  // Wait for all plugins to be registered
-  await app.ready()
-  
-  // Fastify's swagger plugin adds a .swagger() method to the instance
-  const spec = (app as unknown as { swagger: () => unknown }).swagger()
-  
-  await app.close()
+  const spec = await generateOpenApiSpec()
 
   const formatted = JSON.stringify(spec, null, 2)
   writeFileSync(OUTPUT_PATH, formatted + '\n', 'utf-8')
@@ -40,7 +47,9 @@ async function main() {
   console.log(`[openapi] spec version: ${(spec as { info?: { version?: string } }).info?.version}`)
 }
 
-main().catch((err) => {
-  console.error('[openapi] generation failed:', err)
-  process.exit(1)
-})
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('[openapi] generation failed:', err)
+    process.exit(1)
+  })
+}

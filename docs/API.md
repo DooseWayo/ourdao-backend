@@ -84,6 +84,17 @@ data: {"type":"notification","channel":"loans","payload":{"ledger":512046},"time
 - `payload`: Object containing at minimum a `ledger` field (the ledger sequence where the change occurred)
 - `timestamp`: Unix timestamp in milliseconds when the message was sent
 
+**Sub-case: `disconnect` payload.** When the server's shared Postgres LISTEN connection drops (the shared listener's connection `error` handler in `src/api/stream.ts`), every connected client is sent a `notification` whose payload is a disconnect signal rather than a data change:
+
+```
+event: message
+id: 512046
+data: {"type":"notification","channel":"loans","payload":{"type":"disconnect","reason":"database_connection_lost","message":"Database connection lost, please reconnect"},"timestamp":1729015241000}
+
+```
+
+The payload has no `ledger` field and no `channel` of its own; the outer `channel` only reflects which subscribed channel it was delivered on (one copy per subscribed channel), so do not treat it as a change on that channel. Clients should log it and rely on `EventSource`'s native reconnect, then refetch as for a `resync` with `missed: true`.
+
 #### 3. Resync
 
 Sent to reconnecting clients who provide a `Last-Event-ID` header. Tells the client whether they missed changes while disconnected.
@@ -136,6 +147,12 @@ eventSource.addEventListener("message", (event) => {
       break;
 
     case "notification":
+      if (message.payload.type === "disconnect") {
+        // Server lost its database connection; not a data change.
+        // EventSource reconnects on its own and a resync follows.
+        console.warn("Stream disconnect:", message.payload.reason);
+        break;
+      }
       console.log(
         `Change on ${message.channel} at ledger ${message.payload.ledger}`,
       );

@@ -58,6 +58,8 @@ npm run build
 TEST_DATABASE_URL=postgres://ourdao:ourdao@localhost:5432/ourdao_test npm test
 ```
 
+Each parallel test worker uses its own `test_worker_N` schema and drops it on a clean exit. If a run is killed mid-suite (Ctrl-C, a crashed process), those schemas are left behind. Once no test run is in progress, remove them with `npm run clean:test-schemas`, pointed at the same database (`DATABASE_URL=$TEST_DATABASE_URL npm run clean:test-schemas`).
+
 CI provisions a throwaway `ourdao_test` database as a service container and does exactly this.
 
 Two more checks CI runs that aren't in the list above:
@@ -91,6 +93,7 @@ path. Consumer-facing changes must link the corresponding
 - **Error codes are append-only.** Every error response carries a stable `code` from `ERROR_CODES` in `src/api/errors.ts`, and clients branch on it. Treat the list the way `ourdao-contracts` treats its error variants: never rename, remove or repurpose a code — add a new one, and document it in the README's Errors table (`test/api-error-envelope.test.ts` fails on an undocumented code). A route that returns a deliberate error just sends `{ error }` with the right status; the status-derived `code` and `correlationId` are added for it.
 - **This service is strictly read-only with respect to the chain.** It never holds a private key, never signs, and never submits a transaction. Any pull request that introduces a signing path, a key in config, or an outbound write to the network will be rejected regardless of quality — that's an architectural boundary, not a preference.
 - **The `events` table is append-only.** Raw indexed events are the audit trail. Derived tables (`members`, `loans`, `loan_proposals`, `treasury_proposals`, `notifications`) are rebuilt from it. Don't mutate or delete rows in `events`.
+- **`admin_audit_log` is append-only, enforced by the database.** `src/db/schema.sql` installs a `BEFORE UPDATE OR DELETE` trigger (`admin_audit_log_immutable()`) that rejects any change to an existing row. A wrong audit entry is corrected by inserting a new clarifying row, never by editing the old one, the same way the `events` log is never patched.
 - **Event folding stays transactional.** Writing a raw event and folding it into derived tables happens inside one database transaction so a crash can't leave them inconsistent. New event handlers must preserve that.
 - **Indexer changes must be resumable.** The poll loop resumes from a persisted cursor (`indexer_cursor`), not from genesis. Don't introduce state that only exists in memory across polls.
 - **New contract events need a decoder.** When [`ourdao-contracts`](https://github.com/ourdao/ourdao-contracts) adds an event, `src/stellar/events.ts` needs the matching topic-symbol → data-tuple mapping, and usually a derived-table effect. Note in your PR description which contract commit introduced the event. An event whose symbol isn't in `EVENT_FIELDS` is still persisted to `events` and still no-ops in the fold — but the indexer now logs one `[events] unknown event symbol …` warning per symbol per process (on the live path and on `npm run reindex` alike). If you see that warning in the logs, the catalog is behind the contract.
