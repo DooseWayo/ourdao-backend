@@ -43,6 +43,62 @@ export function resetAuthStats(): void {
   authStats.verificationsFailed.unsupportedAddressType = 0
 }
 
+/**
+ * Throttling Architecture and Defense-in-Depth (Issues #184, #507):
+ *
+ * 1. What the IP-based rate limiter protects against:
+ *    Global and per-route `@fastify/rate-limit` (with a stricter limit on
+ *    GET /api/auth/challenge and GET /api/events) protects network and server
+ *    infrastructure against high-volume traffic floods, Denial of Service (DoS),
+ *    and automated scrapers. It operates at the network layer, keyed by client IP.
+ *
+ * 2. What the per-address failure tracker (AuthFailureTracker) protects against:
+ *    `AuthFailureTracker` protects cryptographic identities (Stellar addresses)
+ *    against targeted brute-force attacks (e.g. signature guessing or nonce-spray
+ *    attacks) that may be distributed across many IPs (botnets, rotating proxies)
+ *    where IP-based rate limiting alone is ineffective.
+ *
+ * 3. Why these mechanisms have different keys and scopes:
+ *    - IP rate limiting is keyed on client IP (`req.ip`), scoped to network origin.
+ *      It bounds raw resource consumption per machine/NAT gateway.
+ *    - Auth failure backoff is keyed on Stellar public address (`address`),
+ *      scoped to account identity. It applies exponential delay (1s, 2s, 4s, ... up
+ *      to 60s) specifically after failed signature verifications or invalid nonces.
+ *
+ * 4. How legitimate signature retries should behave:
+ *    A legitimate client with the correct private key signs the issued nonce and
+ *    succeeds on verification, triggering `recordSuccess(address)`, which clears
+ *    any accrued failure records. If a transient error occurs (e.g., client clock
+ *    skew or network timeout leading to nonce expiration), the client may retry
+ *    after any active backoff window expires; legitimate retries with valid signatures
+ *    do not accumulate repeated failures.
+ *
+ * 5. Whether challenge issuance affects the failure tracker's state:
+ *    No. Challenge issuance (`GET /api/auth/challenge?address=...`) does NOT affect
+ *    or advance `AuthFailureTracker` state. Challenges are unauthenticated reads.
+ *    If requesting a challenge recorded a failure or advanced backoff, an attacker
+ *    could trivially lock out any arbitrary victim address without possessing their
+ *    private key (pre-auth DoS). Challenge issuance is protected exclusively by IP
+ *    rate limiting and per-address outstanding nonce caps (`MAX_NONCES_PER_ADDRESS`).
+ *
+ * 6. Information exposure considerations:
+ *    `GET /api/auth/challenge` never reveals whether an address is under backoff.
+ *    Only an authenticated endpoint (`authenticateRequest`) returns HTTP 429
+ *    ("Too many failed attempts. Try again in X seconds") when an address is
+ *    currently backed off. While this does reveal that the address recently incurred
+ *    verification failures, it leaks no private keys or nonce contents.
+ *
+ * Discovered Gap & Follow-up Note:
+ *    Challenge issuance (`GET /api/auth/challenge`) is tracked per-IP by
+ *    `@fastify/rate-limit` and capped at `MAX_NONCES_PER_ADDRESS` (100) per address
+ *    in `NonceStore`, but does not feed into `AuthFailureTracker`. An attacker rotating
+ *    many distributed IPs could exhaust the 100 outstanding nonce slots for a victim
+ *    address, causing subsequent challenge requests to return 503 NonceStoreCapacityError
+ *    until existing nonces expire (5 min TTL). As noted above, tying challenge issuance
+ *    to `AuthFailureTracker` would create an even worse vulnerability (trivial 429 lockout).
+ *    A recommended future hardening measure is to add per-address sliding-window challenge
+ *    issuance limits decoupled from verification backoff.
+ */
 // Per-address failure tracking for exponential backoff (issue #184)
 interface FailureRecord {
   count: number
@@ -557,23 +613,33 @@ export async function authenticateRequest(
     return { authenticated: false, status: 401, error: 'Missing authentication headers' }
   }
 
+  // Check if this address is currently under backoff (issue #184, #507)
+  if (failureTracker && !failureTracker.isAllowed(address)) {
+    const backoffMs = failureTracker.getRemainingBackoff(address)
+    logger?.warn(`[auth] authentication blocked: reason=backoff address=${truncateAddress(address)} backoff_ms=${backoffMs}`)
+    return {
+      authenticated: false,
+      status: 429,
+      error: `Too many failed attempts. Try again in ${Math.ceil(backoffMs / 1000)} seconds`,
+    }
+  }
+
   // Verify the signature first. A bogus request must not consume the nonce,
   // otherwise an attacker can burn a victim's live challenge and lock them out
   // (issue #115). The nonce is only consumed once the signature is valid.
-  const sig = verifySignature(address, nonce, signature)
+  const sig = verifySignature(address, nonce, signature, logger)
   if (!sig.ok) {
+    failureTracker?.recordFailure(address)
     return { authenticated: false, status: sig.status, error: sig.error }
   }
 
   // Check if the nonce is valid and hasn't been used
   const nonceValid = await nonceStore.consume(address, nonce)
   if (!nonceValid) {
+    logger?.warn(`[auth] authentication failed: reason=invalid_nonce address=${truncateAddress(address)}`)
+    authStats.verificationsFailed.invalidNonce++
+    failureTracker?.recordFailure(address)
     return { authenticated: false, status: 401, error: 'Invalid or expired nonce' }
-  }
-
-  // If a target address is provided, ensure it matches the authenticated address
-  if (targetAddress && targetAddress !== address) {
-    return { authenticated: false, status: 403, error: 'Cannot modify notifications for another address' }
   }
 
   // If a target address is provided, ensure it matches the authenticated address.
