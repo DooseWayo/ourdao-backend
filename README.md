@@ -241,19 +241,19 @@ Base path: `/api`.
 | `GET /api/members/:address` | Single member. |
 | `GET /api/members/:address/summary` | Member's dashboard data, including the member row, up to 100 loans, unread notification count, and their relative position to DAO totals (share percentages in basis points) in a single consistent snapshot. |
 | `GET /api/members/:address/activity` | Every event that names this address as a participant (joins, stakes, loan actions, votes), newest first (issue #26). `?before=<ledger>` cursor. Each entry is the decoded event: `id`, `symbol`, `ledger`, `timestamp`, `tx_hash`, and named `fields`. |
-| `GET /api/proposals/loan` | Loan proposals with vote tallies (`votes_for`/`votes_against`), a distinct `voter_count`, and an explicit `tallies_weighted: false` flag. |
+| `GET /api/proposals/loan` | Loan proposals with vote tallies (`votes_for`/`votes_against`), a distinct `voter_count`, and an explicit `tallies_weighted: false` flag. Optional `?status=`, `?order=asc|desc` (default `desc`), `?before=<id>`, `?after=<id>` (issue #508). |
 | `GET /api/proposals/loan/:id` | Single loan proposal, with the same tallies and `tallies_weighted: false` flag as the list. A nonexistent id returns `404` (unlike the timeline routes); a non-numeric id is a `400`. |
-| `GET /api/loans` | Loans. Optional `?borrower=`, `?before=<id>` for pagination. `status` is `active`, `repaid`, or `defaulted` — a loan is marked defaulted once it's past due plus the policy's grace period (permissionless on-chain, see `ourdao-contracts`). Each loan includes derived `interest_charge` and `repaid_amount` fields. |
+| `GET /api/loans` | Loans. Optional `?borrower=`, `?status=`, `?order=asc|desc` (default `desc`), `?before=<id>`, `?after=<id>` for pagination (issue #508). `status` is `active`, `repaid`, or `defaulted` — a loan is marked defaulted once it's past due plus the policy's grace period (permissionless on-chain, see `ourdao-contracts`). Each loan includes derived `interest_charge` and `repaid_amount` fields. |
 | `GET /api/loans/:id` | Single loan, with the same derived `interest_charge`/`repaid_amount` fields. |
 | `GET /api/loans/:id/timeline` | A loan's full lifecycle in chronological order (issue #26): `loan_req`, `loan_edit`, `loan_vote`, `loan_wait`, `loan_rej`, `loan_appr`, `loan_rpy`, `loan_dflt`, `loan_exp`. Returns `{ "timeline": [...], "truncated": false, "total": 6 }` where each timeline entry is the decoded event — `id`, `symbol`, `ledger`, `timestamp`, `tx_hash`, and named `fields` (not raw JSONB) — `total` is every matching event regardless of the cap, and `truncated` is `true` once a lifecycle exceeds `TIMELINE_MAX_ROWS` (2000) rows, so a client can tell "capped" apart from "complete" (issue #586). A nonexistent id returns an empty timeline (`200`), not a `404`. |
-| `GET /api/proposals/treasury` | Treasury proposals with vote tallies, a distinct `voter_count`, and an explicit `tallies_weighted: false` flag. |
+| `GET /api/proposals/treasury` | Treasury proposals with vote tallies, a distinct `voter_count`, and an explicit `tallies_weighted: false` flag. Optional `?status=`, `?order=asc|desc` (default `desc`), `?before=<id>`, `?after=<id>` (issue #508). |
 | `GET /api/proposals/treasury/:id` | Single treasury proposal, same shape as a list row. A nonexistent id returns `404` (unlike the timeline routes); a non-numeric id is a `400`. |
 | `GET /api/proposals/treasury/:id/timeline` | A treasury proposal's full lifecycle in chronological order (issue #26): `tre_prop`, `tre_vote`, `committed`, `revealed`, `tre_wait`, `tre_rej`, `tre_exec`. Same shape (including `truncated`/`total`, issue #586) and empty-not-404 behaviour as the loan timeline. |
 | `GET /api/notifications?address=` | Notifications for an address. |
 | `PATCH /api/notifications/:id/read` | Mark one notification read. |
 | `PATCH /api/notifications/read-all?address=` | Mark every unread notification for an address read. |
 | `GET /api/events` | Raw event feed. Optional `?symbol=`, `?before=<id|ledger>`, `?after=<id|ledger>`, `?order=asc|desc`. |
-| `GET /api/admin/log` | Admin/governance audit trail — init, admin add/remove, threshold changes, policy changes, pause/unpause. |
+| `GET /api/admin/log` | Admin/governance audit trail — init, admin add/remove, threshold changes, policy changes, pause/unpause. Optional `?symbol=`, `?contract=`, `?before=<ledger>`, `?limit=` (issue #509). |
 | `GET /api/documents?kind=&proposal_id=` | A proposal's attached-document history (issue #44) — existence/history only, never the content hash (still read live from the contract via `get_document`). `kind` (`loan` or `treasury`) and `proposal_id` are both required, since loan and treasury proposal ids are drawn from independent sequences and collide. `?before=<ledger>` cursor. |
 | `GET /api/admin/failed-events` | Quarantined events (issue #43) — the operator-facing detail behind `/api/stats.quarantinedEvents`. Each row has the event id, `contract_id`, symbol, ledger, and `resolved_at` (issue #168, null while still outstanding); raw error text stays in Postgres and the raw `events` row is untouched. `?unresolved=true` narrows the list to `resolved_at IS NULL`; `?contract=` scopes rows and `X-Total-Count` to one deployment. |
 | `POST /api/admin/failed-events/:id/re-evaluate` | Re-attempts the fold for one quarantined event (issue #283) — the HTTP equivalent of `npm run replay-failed -- --id <id>`. Authenticated; writes an `admin_audit_log` entry. `422` if the event still fails. |
@@ -278,15 +278,15 @@ Base path: `/api`.
 
 **Loans:**
 
-- `GET /api/proposals/loan` — Loan proposals with vote tallies
+- `GET /api/proposals/loan` — Loan proposals with vote tallies (optional `?status=`, `?order=asc|desc` [default `desc`], `?before=<id>`, `?after=<id>`, `?limit=`)
 - `GET /api/proposals/loan/:id` — Single loan proposal (`404` for a nonexistent id)
-- `GET /api/loans` — Loans list (optional `?borrower=` filter)
+- `GET /api/loans` — Loans list (optional `?borrower=`, `?status=`, `?order=asc|desc` [default `desc`], `?before=<id>`, `?after=<id>`, `?limit=`)
 - `GET /api/loans/:id` — Single loan
 - `GET /api/loans/:id/timeline` — Loan's full lifecycle events
 
 **Treasury:**
 
-- `GET /api/proposals/treasury` — Treasury proposals with vote tallies
+- `GET /api/proposals/treasury` — Treasury proposals with vote tallies (optional `?status=`, `?order=asc|desc` [default `desc`], `?before=<id>`, `?after=<id>`, `?limit=`)
 - `GET /api/proposals/treasury/:id` — Single treasury proposal (`404` for a nonexistent id)
 - `GET /api/proposals/treasury/:id/timeline` — Treasury proposal's full lifecycle events
 
@@ -304,7 +304,7 @@ Base path: `/api`.
 
 **Admin:**
 
-- `GET /api/admin/log` — Admin/governance audit trail
+- `GET /api/admin/log` — Admin/governance audit trail (`?symbol=` narrows to one admin event symbol from `ADMIN_EVENT_SYMBOLS`: `init`, `admin_add`, `admin_rem`, `threshold`, `policy`, `paused`, `unpaused`; an invalid symbol is a `400`; plus `?contract=`, `?before=<ledger>`, `?limit=`). Example: `GET /api/admin/log?symbol=policy`.
 - `GET /api/admin/failed-events` — Quarantined events, newest first: `?before=<id>` cursor, `?unresolved=true`, `?symbol=`, `?contract=`, `?from_ledger=`/`?to_ledger=` (inclusive, at most 10000 ledgers apart), `?limit=`; `X-Total-Count` carries the size of the filtered set so the scale is visible without paging
 - `POST /api/admin/failed-events/:id/re-evaluate` — Re-fold one quarantined event through the same `replayFailedEvent` that `npm run replay-failed` uses. Requires signature authentication. Returns `{ eventId, status }`; `422` when the event still fails. Writes a `resolve_quarantined_event` audit entry.
 - `POST /api/admin/failed-events/batch-resolve` — Close up to 500 quarantined events without replaying them. Requires signature authentication. Body: `ids` (positive integers), `resolution` (`resolved` — the underlying problem was fixed — or `ignored` — deliberately dismissed; stored in `failed_events.resolution`), optional `note` (`resolution_note`). Already-resolved or unknown ids are skipped; returns `{ resolved: <count> }`. Use `npm run replay-failed` or the re-evaluate route instead when the event should actually be re-folded. Writes a `resolve_quarantined_event` audit entry.
@@ -325,7 +325,23 @@ For detailed request/response schemas, query parameters, and authentication requ
 
 ### Common patterns
 
-All list endpoints accept `?limit=` (default 50, max 200); single-lookup routes (`/:id`, `/:address`) don't. `?before=` and `?after=` are cursors: pass the `id` (or `ledger`) of the last row you saw to page. For `/api/events`, the cursor can be a deterministic `(ledger, id)` value and ordering is strictly deterministic (`ledger DESC, id DESC` by default, or `ASC`).
+All list endpoints accept `?limit=` (default 50, max 200); single-lookup routes (`/:id`, `/:address`) don't.
+
+#### Ordering and pagination
+
+Endpoints supporting ordering (`/api/loans`, `/api/proposals/loan`, `/api/proposals/treasury`, `/api/events`) accept `?order=asc|desc` (default `desc` to preserve backward compatibility). Invalid `order` values are rejected with `400`.
+
+Pagination uses cursor boundaries (`?before=` and `?after=`):
+- **Descending pagination (`order=desc`, default):** Traverses from newest to oldest. Pass `?before=<id>` (or `<ledger>`) of the last row seen to retrieve older rows (`id < <id>`).
+  - *Example:*
+    1. First page: `GET /api/loans?order=desc&limit=50` (returns IDs e.g. 100 down to 51)
+    2. Next page: `GET /api/loans?order=desc&before=51&limit=50` (returns IDs 50 down to 1)
+- **Ascending pagination (`order=asc`):** Traverses from oldest to newest. Pass `?after=<id>` (or `<ledger>`) of the last row seen to retrieve newer rows (`id > <id>`).
+  - *Example:*
+    1. First page: `GET /api/loans?order=asc&limit=50` (returns IDs e.g. 1 up to 50)
+    2. Next page: `GET /api/loans?order=asc&after=50&limit=50` (returns IDs 51 up to 100)
+
+`before` and `after` cannot be used together in the same request (returns `400: cannot use before and after together`). For `/api/events`, the cursor can be a deterministic `(ledger, id)` value.
 
 On-chain `i128` amounts are returned as decimal **strings** to preserve precision (see [Database schema](#database-schema)); ledger sequence numbers are returned as regular JSON numbers.
 

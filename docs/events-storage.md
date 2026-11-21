@@ -75,7 +75,7 @@ Per `events` row (`src/db/schema.sql`):
 | `events_pkey` (`id`) | primary key, `ORDER BY … id` keyset tiebreak | ~50 |
 | `events_symbol_idx` (`symbol`) | `?symbol=` filter on `/api/events` | ~25 |
 | `events_ledger_idx` (`ledger`) | `ORDER BY ledger DESC`, reindex scan order | ~25 |
-| `events_contract_id_idx` (`contract_id`) | `?contract=` filter (rare) | ~40 |
+| `events_contract_id_idx` (`contract_id`) | `?contract=` filter on `/api/events`, `/api/admin/log`, multi-contract deployments (retained) | ~40 |
 | `events_entity_id_idx` (`data->>0`) | loan/treasury timeline lookups | ~35 |
 | `events_data_gin_idx` (`data`) | member activity JSONB containment | workload-dependent, ~70–120 |
 
@@ -125,14 +125,21 @@ maintenance and monitor its age alongside autovacuum activity.
 - **`events_symbol_idx`** — earns its cost. `?symbol=` is a common filter and
   symbol cardinality is low (~30), so it's a cheap, effective partial scan.
   Keep.
-- **`events_contract_id_idx`** — added for `?contract=` (issue #16), which is
-  only used when one database has held more than one `CONTRACT_ID`
-  (`resetForContractChange`). Cardinality is 1 for almost every deployment,
-  making the index dead weight on writes. **Recommendation:** measure
-  `count(DISTINCT contract_id)` in production (the harness prints it); if it's
-  1, drop the index and let `?contract=` fall back to a seq scan on the rare
-  admin query that uses it. Not dropped in this change — it's a one-line
-  migration once the measurement confirms it.
+- **`events_contract_id_idx`** — review and cardinality measurement (issue #510):
+  - **Measurement Query:**
+    ```sql
+    SELECT count(DISTINCT contract_id) FROM events;
+    ```
+    Also runnable via `npm run measure:contract-cardinality` (implemented in `scripts/measure-contract-cardinality.ts`) or through `npm run bench:events`.
+  - **Available Evidence:**
+    - Continuous integration benchmark (`scripts/bench-events-storage.ts`, baseline: 20,000 events) measures 2 distinct contracts with `events_contract_id_idx` size of 160 kB (~5.6% of total index storage, ~28% of heap size).
+    - **Production measurement status:** OUTSTANDING. Production database metrics across live deployments have not yet been collected. Because evidence must not be fabricated, no speculative production findings are assumed.
+  - **Implications of Single-Contract vs. Multi-Contract Deployments:**
+    - *Single-contract deployments:* In deployments indexing only one contract (`CONTRACT_ID`), `COUNT(DISTINCT contract_id)` is 1. The index provides minimal selectivity on contract alone and is primarily queried during rare `?contract=` filters or historical contract resets (`resetForContractChange`).
+    - *Multi-contract deployments:* With the introduction of multi-contract tailing (`CONTRACT_IDS`, issue #289), multiple active contracts (e.g. governance DAO contract, treasury vaults, multiple sub-DAOs) write to the same `events` table concurrently. Dropping `events_contract_id_idx` would force all `?contract=` queries (such as on `GET /api/events`, `GET /api/admin/log`, and `GET /api/admin/failed-events`) into sequential table scans over millions of rows across all contracts, severely degrading read performance.
+    - *Storage Overhead:* Retaining the index accounts for only ~40 bytes/row (~5% of total row size), a modest cost for avoiding unbounded sequential scans.
+  - **Recommendation:** Retain `events_contract_id_idx`.
+    Because multi-contract tailing relies on contract-filtered queries and production measurement is currently outstanding, an unconditional migration dropping `events_contract_id_idx` is unjustified and would risk breaking multi-contract deployment performance. The index will be retained until empirical production measurements from active operators prove that contract filtering is either nonexistent or adequately covered by composite indexes.
 
 ## Recommendation: no schema change yet
 

@@ -160,6 +160,47 @@
             "name": "status",
             "required": false,
             "description": "Filter by loan proposal status (issue #593). Must be one of LOAN_PROPOSAL_STATUSES; anything else is a 400."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "desc"
+            },
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "description": "Sort ordering by proposal id (asc or desc, default desc) (issue #508)."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "description": "Pagination cursor for descending ordering: return rows with id strictly less than this value (issue #508)."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "description": "Pagination cursor for ascending ordering: return rows with id strictly greater than this value (issue #508)."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Max rows to return (1-200, default 50)."
           }
         ],
         "responses": {
@@ -204,6 +245,56 @@
             "name": "status",
             "required": false,
             "description": "Filter by loan status."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "desc"
+            },
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "description": "Sort ordering by loan id (asc or desc, default desc) (issue #508)."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "description": "Pagination cursor for descending ordering: return rows with id strictly less than this value (issue #508)."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "description": "Pagination cursor for ascending ordering: return rows with id strictly greater than this value (issue #508)."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Max rows to return (1-200, default 50)."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "borrower",
+            "required": false,
+            "description": "Filter by borrower Stellar address."
           }
         ],
         "responses": {
@@ -317,6 +408,47 @@
             "name": "status",
             "required": false,
             "description": "Filter by treasury proposal status (issue #593). Must be one of TREASURY_PROPOSAL_STATUSES; anything else is a 400."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "desc"
+            },
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "description": "Sort ordering by proposal id (asc or desc, default desc) (issue #508)."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "description": "Pagination cursor for descending ordering: return rows with id strictly less than this value (issue #508)."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "description": "Pagination cursor for ascending ordering: return rows with id strictly greater than this value (issue #508)."
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Max rows to return (1-200, default 50)."
           }
         ],
         "responses": {
@@ -674,6 +806,24 @@
             "name": "contract",
             "required": false,
             "description": "Restrict to one contract deployment id."
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "init",
+                "admin_add",
+                "admin_rem",
+                "threshold",
+                "policy",
+                "paused",
+                "unpaused"
+              ]
+            },
+            "in": "query",
+            "name": "symbol",
+            "required": false,
+            "description": "Filter by admin event symbol (issue #509). Must be one of ADMIN_EVENT_SYMBOLS; anything else is a 400."
           }
         ],
         "responses": {
