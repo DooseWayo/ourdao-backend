@@ -19,6 +19,7 @@
     "replay-failed": "tsx src/indexer/replay.ts",
     "reorg:clear": "tsx src/indexer/clear-reorg.ts",
     "bench:events": "tsx scripts/bench-events-storage.ts",
+    "measure:contract-cardinality": "tsx scripts/measure-contract-cardinality.ts",
     "bench:api": "tsx scripts/bench-api-latency.ts",
     "bench:stream": "tsx scripts/load-test-stream.ts",
     "clean:test-schemas": "tsx scripts/clean-test-schemas.ts",
