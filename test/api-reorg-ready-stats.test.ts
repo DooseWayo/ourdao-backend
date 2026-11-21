@@ -1,4 +1,14 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+﻿/**
+ * Issue #375 — /health and /ready multi-contract correctness.
+ *
+ * When CONTRACT_IDS is configured the existing single-id paths in both
+ * endpoints misreported: /health returned { contract: null } and /ready only
+ * inspected the id = 1 singleton row, missing contracts that had never been
+ * polled. These tests verify both endpoints behave correctly in multi-contract
+ * mode and that the single-contract path is unaffected.
+ */
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
 import type { FastifyInstance } from 'fastify'
 import { buildServer } from '../src/api/server.js'
 import { query } from '../src/db/index.js'
@@ -104,6 +114,235 @@ describe('reorg halt surfaced on /ready and /api/stats (issue #191)', () => {
     res = await app.inject({ method: 'GET', url: '/api/stats' })
     expect(res.json().reorgDetected).toBe(false)
     expect(res.json().reorgHalt).toBeNull()
+import * as configModule from '../src/config.js'
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Seed a cursor row keyed by contract_id. The singleton id = 1 constraint is
+ * relaxed here: multi-contract rows must be inserted via contract_id lookup,
+ * not id = 1.  We drop the CONSTRAINT for multi-contract tests and restore it
+ * after. Single-contract tests use the normal id = 1 path.
+ */
+async function seedCursorByContract(
+  contractId: string,
+  lastLedger: number,
+  updatedAt: string = 'now()'
+): Promise<void> {
+  // Insert without relying on id = 1 — use the contract_id column so each
+  // contract gets its own row (multi-contract schema assumption).
+  await query(
+    `INSERT INTO indexer_cursor (paging_token, last_ledger, observed_tip_ledger, contract_id, updated_at)
+     VALUES (NULL, $1, $1, $2, ${updatedAt})
+     ON CONFLICT (id) DO UPDATE
+       SET last_ledger = $1, observed_tip_ledger = $1, contract_id = $2, updated_at = ${updatedAt}`,
+    [lastLedger, contractId]
+  )
+}
+
+// ---------------------------------------------------------------------------
+// /health — multi-contract (issue #375)
+// ---------------------------------------------------------------------------
+
+describe('GET /health — multi-contract (issue #375)', () => {
+  let app: FastifyInstance
+  let configSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(async () => {
+    await resetDb()
+  })
+
+  afterEach(async () => {
+    await app?.close()
+    configSpy?.mockRestore()
+  })
+
+  afterAll(closeDb)
+
+  it('returns contracts array from CONTRACT_IDS when multiple ids are configured', async () => {
+    // Temporarily override config.stellar so we don't need a real env var
+    configSpy = vi.spyOn(configModule, 'config', 'get').mockReturnValue({
+      ...configModule.config,
+      stellar: {
+        ...configModule.config.stellar,
+        contractId: '',
+        contractIds: ['CA111', 'CB222'],
+      },
+    })
+    app = await buildServer()
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.status).toBe('ok')
+    expect(body.contracts).toEqual(['CA111', 'CB222'])
+  })
+
+  it('falls back to [contractId] array when only CONTRACT_ID is set', async () => {
+    configSpy = vi.spyOn(configModule, 'config', 'get').mockReturnValue({
+      ...configModule.config,
+      stellar: {
+        ...configModule.config.stellar,
+        contractId: 'CSINGLE',
+        contractIds: [],
+      },
+    })
+    app = await buildServer()
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.status).toBe('ok')
+    expect(body.contracts).toEqual(['CSINGLE'])
+  })
+
+  it('returns contracts: null when neither CONTRACT_ID nor CONTRACT_IDS is set', async () => {
+    configSpy = vi.spyOn(configModule, 'config', 'get').mockReturnValue({
+      ...configModule.config,
+      stellar: {
+        ...configModule.config.stellar,
+        contractId: '',
+        contractIds: [],
+      },
+    })
+    app = await buildServer()
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.status).toBe('ok')
+    expect(body.contracts).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// /ready — multi-contract (issue #375)
+// ---------------------------------------------------------------------------
+
+describe('GET /ready — multi-contract cursor verification (issue #375)', () => {
+  let app: FastifyInstance
+  let configSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(async () => {
+    await resetDb()
+  })
+
+  afterEach(async () => {
+    await app?.close()
+    configSpy?.mockRestore()
+  })
+
+  afterAll(closeDb)
+
+  function withContractIds(ids: string[]): void {
+    configSpy = vi.spyOn(configModule, 'config', 'get').mockReturnValue({
+      ...configModule.config,
+      stellar: {
+        ...configModule.config.stellar,
+        contractId: '',
+        contractIds: ids,
+      },
+    })
+  }
+
+  it('reports cold_start when no contracts have cursor rows', async () => {
+    withContractIds(['CA', 'CB'])
+    app = await buildServer()
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/ready' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.status).toBe('ready')
+    expect(body.indexer).toBe('cold_start')
+    expect(body.lastIndexedLedger).toBeNull()
+  })
+
+  it('reports cold_start when only some configured contracts have cursor rows', async () => {
+    // Seed only CA — CB is missing
+    await seedCursorByContract('CA', 100)
+    withContractIds(['CA', 'CB'])
+    app = await buildServer()
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/ready' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.status).toBe('ready')
+    // CB has no row yet — partial start is a cold_start for the whole probe
+    expect(body.indexer).toBe('cold_start')
+  })
+
+  it('reports ok when all configured contracts have fresh cursor rows', async () => {
+    await seedCursorByContract('CA', 200)
+    // Second contract needs its own row — override id uniqueness to allow two rows
+    await query(`ALTER TABLE indexer_cursor DROP CONSTRAINT indexer_cursor_singleton`)
+    try {
+      await query(
+        `INSERT INTO indexer_cursor (paging_token, last_ledger, observed_tip_ledger, contract_id, updated_at)
+         VALUES (NULL, 200, 200, 'CB', now())`
+      )
+      withContractIds(['CA', 'CB'])
+      app = await buildServer()
+      await app.ready()
+
+      const res = await app.inject({ method: 'GET', url: '/ready' })
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.status).toBe('ready')
+      expect(body.indexer).toBe('ok')
+    } finally {
+      await query(`ALTER TABLE indexer_cursor ADD CONSTRAINT indexer_cursor_singleton CHECK (id = 1)`)
+    }
+  })
+
+  it('reports 503 indexer_stale when the least-advanced contract is stale', async () => {
+    await query(`ALTER TABLE indexer_cursor DROP CONSTRAINT indexer_cursor_singleton`)
+    try {
+      // CA is fresh
+      await query(
+        `INSERT INTO indexer_cursor (paging_token, last_ledger, observed_tip_ledger, contract_id, updated_at)
+         VALUES (NULL, 200, 200, 'CA', now())`
+      )
+      // CB is stale (10 minutes ago)
+      await query(
+        `INSERT INTO indexer_cursor (paging_token, last_ledger, observed_tip_ledger, contract_id, updated_at)
+         VALUES (NULL, 100, 100, 'CB', now() - interval '10 minutes')`
+      )
+      withContractIds(['CA', 'CB'])
+      app = await buildServer()
+      await app.ready()
+
+      const res = await app.inject({ method: 'GET', url: '/ready' })
+      expect(res.statusCode).toBe(503)
+      const body = res.json()
+      expect(body.status).toBe('not ready')
+      expect(body.reason).toBe('indexer_stale')
+    } finally {
+      await query(`ALTER TABLE indexer_cursor ADD CONSTRAINT indexer_cursor_singleton CHECK (id = 1)`)
+    }
+  })
+
+  it('single-contract path is unaffected: still uses id = 1 row when CONTRACT_IDS is empty', async () => {
+    // Single-contract: seed id = 1 normally
+    await query(`INSERT INTO indexer_cursor (id, last_ledger, updated_at) VALUES (1, 300, now())`)
+    // contractIds empty → falls through to legacy path
+    withContractIds([])
+    app = await buildServer()
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/ready' })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.status).toBe('ready')
+    expect(body.indexer).toBe('ok')
+    expect(body.lastIndexedLedger).toBe(300)
+
   })
 
   it('issue #491: /ready and /api/stats scale estimatedLagSeconds by STELLAR_LEDGER_CLOSE_TIME_SECONDS', async () => {

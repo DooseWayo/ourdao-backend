@@ -1,11 +1,11 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { buildServer } from '../src/api/server.js'
 import { query } from '../src/db/index.js'
 import { closeDb, resetDb } from './db.js'
-import { config, parseCorsOrigin } from '../src/config.js'
+import { config, parseCorsOrigin, resolveConfig } from '../src/config.js'
 
 describe('parseCorsOrigin', () => {
   it('returns localhost:3000 when unset', () => {
@@ -55,6 +55,9 @@ describe('API: /health and /ready', () => {
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.status).toBe('ok')
+    // contracts is null when neither CONTRACT_ID nor CONTRACT_IDS is set in
+    // the test environment, or an array when either is configured.
+    expect(body.contracts === null || Array.isArray(body.contracts)).toBe(true)
   })
 
   it('GET /health/dependencies reports Postgres and RPC status indicators (issue #276)', async () => {

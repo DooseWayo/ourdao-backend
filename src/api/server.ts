@@ -294,7 +294,11 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
             type: 'object',
             properties: {
               status: { type: 'string', enum: ['ok'] },
-              contract: { type: ['string', 'null'], description: 'Currently configured Soroban contract id, or null if unset.' },
+              contracts: {
+                type: ['array', 'null'],
+                items: { type: 'string' },
+                description: 'All configured Soroban contract ids (from CONTRACT_IDS or CONTRACT_ID), or null if neither is set.',
+              },
               auth: {
                 type: 'object',
                 properties: {
@@ -318,11 +322,16 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
         },
       },
     },
-    async () => ({
-      status: 'ok',
-      contract: config.stellar.contractId || null,
-      auth: getAuthStats(),
-    })
+    async () => {
+      // Issue #375: report all configured contracts as an array.
+      const contracts =
+        config.stellar.contractIds.length > 0
+          ? config.stellar.contractIds
+          : config.stellar.contractId
+            ? [config.stellar.contractId]
+            : null
+      return { status: 'ok', contracts, auth: getAuthStats() }
+    }
   )
 
   // ── Dependency health indicators (issue #276) ──
@@ -535,25 +544,68 @@ export async function buildServer(opts: BuildServerOptions = {}): Promise<Fastif
     }
 
     // 2. Indexer cursor state
+    // Issue #375: when CONTRACT_IDS is configured, verify every configured
+    // contract has a cursor row before checking freshness. A missing row means
+    // that contract has never been polled — treat the whole probe as cold_start.
     let row: CursorRow | null = null
-    try {
-      // Issue #289: indexer_cursor now has one row per tailed contract
-      // instead of a single id=1 row. Freshness/readiness reflects the
-      // *worst* (least recently updated) contract — the system as a whole
-      // isn't ready if any one tailed contract has fallen behind — which is
-      // also exactly the single-contract behavior when there's only one row.
-      row = await pool
-        .query<CursorRow>('SELECT last_ledger, observed_tip_ledger, updated_at FROM indexer_cursor ORDER BY updated_at ASC NULLS FIRST LIMIT 1')
-        .then((r) => r.rows[0] ?? null)
-    } catch (err) {
-      // Issue #347: a failing cursor read is not a cold start unless the table
-      // is genuinely missing — otherwise the orchestrator routes traffic to an
-      // instance whose indexer state is unknown.
-      if (!isUndefinedTable(err)) {
-        req.log.error({ err }, '/ready: indexer cursor query failed')
-        return reply.code(503).send({ status: 'not ready', reason: 'postgres_error' })
+    const configuredIds = config.stellar.contractIds
+    if (configuredIds.length > 0) {
+      // Multi-contract path: fetch all configured contracts' cursor rows.
+      let rows: CursorRow[] = []
+      try {
+        rows = await pool
+          .query<CursorRow>(
+            `SELECT last_ledger, observed_tip_ledger, updated_at
+             FROM indexer_cursor
+             WHERE contract_id = ANY($1::text[])`,
+            [configuredIds]
+          )
+          .then((r) => r.rows)
+      } catch (err) {
+        if (!isUndefinedTable(err)) {
+          req.log.error({ err }, '/ready: indexer cursor query failed')
+          return reply.code(503).send({ status: 'not ready', reason: 'postgres_error' })
+        }
+        // Table may not exist yet — treat as cold start
       }
-      // Table may not exist yet — treat as cold start
+      // Any configured contract with no row has never been polled.
+      if (rows.length < configuredIds.length) {
+        return reply.code(200).send({
+          status: 'ready',
+          indexer: 'cold_start',
+          lastIndexedLedger: null,
+          observedTipLedger: null,
+          ledgersBehind: null,
+          estimatedLagSeconds: null,
+          secondsSinceUpdate: null,
+        })
+      }
+      // Pick the least-advanced (oldest updated_at) row as the worst case.
+      row = rows.reduce((worst, r) => {
+        if (worst === null) return r
+        if (r.updated_at === null) return r
+        if (worst.updated_at === null) return worst
+        return new Date(r.updated_at) < new Date(worst.updated_at) ? r : worst
+      }, null as CursorRow | null)
+    } else {
+      // Generic path: use the worst (oldest) cursor row across all contracts.
+      // Issue #289: indexer_cursor now has one row per tailed contract instead
+      // of a single id=1 row. Freshness/readiness reflects the *worst*
+      // (least recently updated) contract.
+      try {
+        row = await pool
+          .query<CursorRow>('SELECT last_ledger, observed_tip_ledger, updated_at FROM indexer_cursor ORDER BY updated_at ASC NULLS FIRST LIMIT 1')
+          .then((r) => r.rows[0] ?? null)
+      } catch (err) {
+        // Issue #347: a failing cursor read is not a cold start unless the table
+        // is genuinely missing — otherwise the orchestrator routes traffic to an
+        // instance whose indexer state is unknown.
+        if (!isUndefinedTable(err)) {
+          req.log.error({ err }, '/ready: indexer cursor query failed')
+          return reply.code(503).send({ status: 'not ready', reason: 'postgres_error' })
+        }
+        // Table may not exist yet — treat as cold start
+      }
     }
 
     // 3. A recorded, uncleared ledger discontinuity (issue #191). Reported

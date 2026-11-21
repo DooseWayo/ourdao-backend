@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs'
+﻿import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { describe, expect, it, vi } from 'vitest'
 import {
@@ -6,7 +6,7 @@ import {
   bool,
   int,
   nonceStore,
-  parseStellarRpcHeaders,
+        rpcHeaders: {},
   resolveConfig,
   str,
 } from '../src/config.js'
@@ -158,7 +158,8 @@ describe('resolveConfig', () => {
       stellar: {
         contractId: '',
         contractIds: [],
-        rpcHeaders: {},
+  parseContractIds,
+  parseStellarRpcHeaders,
         rpcUrl: 'https://soroban-testnet.stellar.org',
         networkPassphrase: 'Test SDF Network ; September 2015',
         ledgerCloseTimeSeconds: 5,
@@ -243,20 +244,50 @@ describe('.env.example completeness (issue #226)', () => {
     const root = resolve(import.meta.dirname, '..')
     const configSource = readFileSync(resolve(root, 'src/config.ts'), 'utf8')
     const envExample = readFileSync(resolve(root, '.env.example'), 'utf8')
-
     const helperReads = [...configSource.matchAll(/\b(?:int|str|bool|logLevel|nonceStore)\(env,\s*'([A-Z0-9_]+)'/g)].map(
       (m) => m[1]!
     )
     const directReads = [...configSource.matchAll(/\benv\.([A-Z0-9_]+)\b/g)].map((m) => m[1]!)
     const allConfigVars = [...new Set([...helperReads, ...directReads])]
-
     expect(allConfigVars.length).toBeGreaterThan(0)
-
     const definedInExample = new Set(
       [...envExample.matchAll(/^([A-Z0-9_]+)=/gm)].map((m) => m[1]!)
     )
-
     const missing = allConfigVars.filter((name) => !definedInExample.has(name))
     expect(missing).toEqual([])
+  })
+})
+
+describe('parseContractIds (issue #375)', () => {
+  it('returns an empty array when unset', () => {
+    expect(parseContractIds(undefined)).toEqual([])
+  })
+  it('returns an empty array for a blank string', () => {
+    expect(parseContractIds('')).toEqual([])
+    expect(parseContractIds('   ')).toEqual([])
+  })
+  it('parses a single contract id', () => {
+    expect(parseContractIds('CABC')).toEqual(['CABC'])
+  })
+  it('parses a comma-separated list', () => {
+    expect(parseContractIds('CA,CB,CC')).toEqual(['CA', 'CB', 'CC'])
+  })
+  it('trims whitespace around each id', () => {
+    expect(parseContractIds(' CA , CB , CC ')).toEqual(['CA', 'CB', 'CC'])
+  })
+  it('drops empty entries', () => {
+    expect(parseContractIds('CA,,CB,')).toEqual(['CA', 'CB'])
+  })
+  it('de-duplicates identical ids', () => {
+    expect(parseContractIds('CA,CB,CA')).toEqual(['CA', 'CB'])
+  })
+  it('resolveConfig reads CONTRACT_IDS into contractIds', () => {
+    const resolved = resolveConfig({ CONTRACT_IDS: 'CA,CB' })
+    expect(resolved.stellar.contractIds).toEqual(['CA', 'CB'])
+  })
+  it('resolveConfig defaults contractIds to empty array when CONTRACT_IDS is unset', () => {
+    const resolved = resolveConfig({ CONTRACT_ID: 'CA' })
+    expect(resolved.stellar.contractIds).toEqual([])
+  })
   })
 })
