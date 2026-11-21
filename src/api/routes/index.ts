@@ -136,6 +136,23 @@ function isMemberActivitySymbol(v: unknown): v is (typeof MEMBER_ACTIVITY_SYMBOL
   return typeof v === 'string' && (MEMBER_ACTIVITY_SYMBOLS as readonly string[]).includes(v)
 }
 
+function isAdminEventSymbol(v: unknown): v is (typeof ADMIN_EVENT_SYMBOLS)[number] {
+  return typeof v === 'string' && (ADMIN_EVENT_SYMBOLS as readonly string[]).includes(v)
+}
+
+function parseOrder(v: unknown): 'asc' | 'desc' | null {
+  if (v === undefined || v === null || v === '') return 'desc'
+  if (typeof v === 'string') {
+    const lower = v.toLowerCase()
+    if (lower === 'asc' || lower === 'desc') return lower
+  }
+  return null
+}
+
+function invalidOrder(v: unknown): boolean {
+  return v !== undefined && v !== null && v !== '' && parseOrder(v) === null
+}
+
 // Validate a positive integer path param (loan / proposal id). Returns the
 // trimmed decimal string on success (kept as a string so it compares
 // directly against the JSONB-extracted `data->>0`), or null.
@@ -523,7 +540,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     return { activity: rows.map(toTimelineEntry) }
   })
 
-  // --- Loan proposals (optional ?status=, ?borrower= filters) ---
+  // --- Loan proposals (optional ?status=, ?borrower=, ?order=, ?before=, ?after= filters) ---
   app.get('/proposals/loan', {
     schema: {
       querystring: {
@@ -534,14 +551,40 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
             enum: [...LOAN_PROPOSAL_STATUSES],
             description: 'Filter by loan proposal status (issue #593). Must be one of LOAN_PROPOSAL_STATUSES; anything else is a 400.',
           },
+          order: {
+            type: 'string',
+            enum: ['asc', 'desc'],
+            default: 'desc',
+            description: 'Sort ordering by proposal id (asc or desc, default desc) (issue #508).',
+          },
+          before: {
+            type: 'string',
+            description: 'Pagination cursor for descending ordering: return rows with id strictly less than this value (issue #508).',
+          },
+          after: {
+            type: 'string',
+            description: 'Pagination cursor for ascending ordering: return rows with id strictly greater than this value (issue #508).',
+          },
+          limit: {
+            type: 'string',
+            description: 'Max rows to return (1-200, default 50).',
+          },
         },
       },
     },
   }, async (req, reply) => {
-    setCachePolicy(reply, 'public-live')
     const q = req.query as Record<string, unknown>
     if (invalidLimit(q.limit)) return reply.code(400).send({ error: 'invalid limit parameter' })
     const l = limit(q.limit)
+    const before = cursor(q.before)
+    const after = cursor(q.after)
+    if (invalidCursor(q.before)) return reply.code(400).send({ error: 'invalid before cursor' })
+    if (invalidCursor(q.after)) return reply.code(400).send({ error: 'invalid after cursor' })
+    if (before !== null && after !== null) return reply.code(400).send({ error: 'cannot use before and after together' })
+    if (invalidOrder(q.order)) return reply.code(400).send({ error: 'invalid order parameter: expected asc or desc' })
+    const order = parseOrder(q.order) === 'asc' ? 'ASC' : 'DESC'
+
+    setCachePolicy(reply, historicalOrLive(before !== null || after !== null))
 
     if (q.borrower !== undefined && q.borrower !== null && q.borrower !== '') {
       if (typeof q.borrower !== 'string' || !validAddress(q.borrower)) {
@@ -570,11 +613,19 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
       params.push(status)
       conditions.push(`status = $${params.length}`)
     }
+    if (before !== null) {
+      params.push(before)
+      conditions.push(`id < $${params.length}`)
+    }
+    if (after !== null) {
+      params.push(after)
+      conditions.push(`id > $${params.length}`)
+    }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     params.push(l)
 
     const rows = await query<LoanProposalRow>(
-      `SELECT * FROM loan_proposals ${where} ORDER BY id DESC LIMIT $${params.length}`,
+      `SELECT * FROM loan_proposals ${where} ORDER BY id ${order} LIMIT $${params.length}`,
       params,
     )
     // The contract applies stake-weighted voting internally, but doesn't yet
@@ -596,7 +647,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     return { ...proposal, tallies_weighted: false }
   })
 
-  // --- Loans (optional ?borrower= filter, ?status= filter, ?before=<id> cursor) ---
+  // --- Loans (optional ?borrower= filter, ?status= filter, ?order=, ?before=, ?after= cursor) ---
   app.get('/loans', {
     schema: {
       querystring: {
@@ -607,6 +658,28 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
             enum: [...LOAN_STATUSES],
             description: 'Filter by loan status.',
           },
+          order: {
+            type: 'string',
+            enum: ['asc', 'desc'],
+            default: 'desc',
+            description: 'Sort ordering by loan id (asc or desc, default desc) (issue #508).',
+          },
+          before: {
+            type: 'string',
+            description: 'Pagination cursor for descending ordering: return rows with id strictly less than this value (issue #508).',
+          },
+          after: {
+            type: 'string',
+            description: 'Pagination cursor for ascending ordering: return rows with id strictly greater than this value (issue #508).',
+          },
+          limit: {
+            type: 'string',
+            description: 'Max rows to return (1-200, default 50).',
+          },
+          borrower: {
+            type: 'string',
+            description: 'Filter by borrower Stellar address.',
+          },
         },
       },
     },
@@ -615,8 +688,13 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     if (invalidLimit(q.limit)) return reply.code(400).send({ error: 'invalid limit parameter' })
     const l = limit(q.limit)
     const before = cursor(q.before)
+    const after = cursor(q.after)
     if (invalidCursor(q.before)) return reply.code(400).send({ error: 'invalid before cursor' })
-    setCachePolicy(reply, historicalOrLive(before !== null))
+    if (invalidCursor(q.after)) return reply.code(400).send({ error: 'invalid after cursor' })
+    if (before !== null && after !== null) return reply.code(400).send({ error: 'cannot use before and after together' })
+    if (invalidOrder(q.order)) return reply.code(400).send({ error: 'invalid order parameter: expected asc or desc' })
+    const order = parseOrder(q.order) === 'asc' ? 'ASC' : 'DESC'
+    setCachePolicy(reply, historicalOrLive(before !== null || after !== null))
 
     if (q.borrower !== undefined && q.borrower !== null && q.borrower !== '') {
       if (typeof q.borrower !== 'string' || !validAddress(q.borrower)) {
@@ -649,9 +727,13 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
       params.push(before)
       conditions.push(`id < $${params.length}`)
     }
+    if (after !== null) {
+      params.push(after)
+      conditions.push(`id > $${params.length}`)
+    }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     params.push(l)
-    const loans = await query<LoanRow>(`SELECT * FROM loans ${where} ORDER BY id DESC LIMIT $${params.length}`, params)
+    const loans = await query<LoanRow>(`SELECT * FROM loans ${where} ORDER BY id ${order} LIMIT $${params.length}`, params)
     return loans.map((l) => withLoanDerived(l, req.log))
   })
 
@@ -689,7 +771,7 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     return entityTimeline(LOAN_TIMELINE_SYMBOLS, id)
   })
 
-  // --- Treasury proposals (optional ?status= filter) ---
+  // --- Treasury proposals (optional ?status=, ?order=, ?before=, ?after= filters) ---
   app.get('/proposals/treasury', {
     schema: {
       querystring: {
@@ -700,14 +782,40 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
             enum: [...TREASURY_PROPOSAL_STATUSES],
             description: 'Filter by treasury proposal status (issue #593). Must be one of TREASURY_PROPOSAL_STATUSES; anything else is a 400.',
           },
+          order: {
+            type: 'string',
+            enum: ['asc', 'desc'],
+            default: 'desc',
+            description: 'Sort ordering by proposal id (asc or desc, default desc) (issue #508).',
+          },
+          before: {
+            type: 'string',
+            description: 'Pagination cursor for descending ordering: return rows with id strictly less than this value (issue #508).',
+          },
+          after: {
+            type: 'string',
+            description: 'Pagination cursor for ascending ordering: return rows with id strictly greater than this value (issue #508).',
+          },
+          limit: {
+            type: 'string',
+            description: 'Max rows to return (1-200, default 50).',
+          },
         },
       },
     },
   }, async (req, reply) => {
-    setCachePolicy(reply, 'public-live')
     const q = req.query as Record<string, unknown>
     if (invalidLimit(q.limit)) return reply.code(400).send({ error: 'invalid limit parameter' })
     const l = limit(q.limit)
+    const before = cursor(q.before)
+    const after = cursor(q.after)
+    if (invalidCursor(q.before)) return reply.code(400).send({ error: 'invalid before cursor' })
+    if (invalidCursor(q.after)) return reply.code(400).send({ error: 'invalid after cursor' })
+    if (before !== null && after !== null) return reply.code(400).send({ error: 'cannot use before and after together' })
+    if (invalidOrder(q.order)) return reply.code(400).send({ error: 'invalid order parameter: expected asc or desc' })
+    const order = parseOrder(q.order) === 'asc' ? 'ASC' : 'DESC'
+
+    setCachePolicy(reply, historicalOrLive(before !== null || after !== null))
 
     // Issue #593: an unrecognized ?status= is rejected explicitly, matching
     // /api/loans's existing status validation — a typo'd status would
@@ -725,11 +833,19 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
       params.push(status)
       conditions.push(`status = $${params.length}`)
     }
+    if (before !== null) {
+      params.push(before)
+      conditions.push(`id < $${params.length}`)
+    }
+    if (after !== null) {
+      params.push(after)
+      conditions.push(`id > $${params.length}`)
+    }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     params.push(l)
 
     const rows = await query<TreasuryProposalRow>(
-      `SELECT * FROM treasury_proposals ${where} ORDER BY id DESC LIMIT $${params.length}`,
+      `SELECT * FROM treasury_proposals ${where} ORDER BY id ${order} LIMIT $${params.length}`,
       params,
     )
     // See the matching comment on GET /proposals/loan above (issue #126).
@@ -912,7 +1028,8 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     const fromLedger = ledgerBound(q.from_ledger)
     const toLedger = ledgerBound(q.to_ledger)
 
-    const order = typeof q.order === 'string' && q.order === 'asc' ? 'ASC' : 'DESC'
+    if (invalidOrder(q.order)) return reply.code(400).send({ error: 'invalid order parameter: expected asc or desc' })
+    const order = parseOrder(q.order) === 'asc' ? 'ASC' : 'DESC'
 
     setCachePolicy(reply, historicalOrLive(before !== null || after !== null))
 
@@ -1061,6 +1178,11 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
           limit: { type: 'string', description: 'Max rows to return (1-200, default 50).' },
           before: { type: 'string', description: 'Pagination cursor: return rows with a strictly smaller ledger than this value.' },
           contract: { type: 'string', description: 'Restrict to one contract deployment id.' },
+          symbol: {
+            type: 'string',
+            enum: [...ADMIN_EVENT_SYMBOLS],
+            description: 'Filter by admin event symbol (issue #509). Must be one of ADMIN_EVENT_SYMBOLS; anything else is a 400.',
+          },
         },
       },
       response: {
@@ -1097,10 +1219,21 @@ export async function registerRoutes(app: FastifyInstance, opts: { nonceStore: N
     if (invalidCursor(q.before)) return reply.code(400).send({ error: 'invalid before cursor' })
 
     setCachePolicy(reply, historicalOrLive(before !== null))
+
+    // Issue #509: optional `?symbol=` filter. Reject values not in ADMIN_EVENT_SYMBOLS.
+    const symbolFilter = q.symbol
+    if (symbolFilter !== undefined && !isAdminEventSymbol(symbolFilter)) {
+      return reply.code(400).send({
+        error: `invalid symbol filter: expected one of ${ADMIN_EVENT_SYMBOLS.join(', ')}`,
+      })
+    }
+
     // `?contract=<C...>` scopes to one deployment, same as /events (issue #16).
     const contract = typeof q.contract === 'string' && q.contract ? q.contract : null
-    const params: unknown[] = [ADMIN_EVENT_SYMBOLS as unknown as string[]]
-    let where = `WHERE symbol = ANY($1)`
+    const params: unknown[] = [symbolFilter ?? (ADMIN_EVENT_SYMBOLS as unknown as string[])]
+    let where = symbolFilter !== undefined
+      ? `WHERE symbol = $1`
+      : `WHERE symbol = ANY($1)`
     if (contract) {
       params.push(contract)
       where += ` AND contract_id = $${params.length}`
